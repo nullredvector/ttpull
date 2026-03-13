@@ -282,10 +282,11 @@ async function downloadFile(url, destPath, headers) {
 
 // ── Main download job ─────────────────────────────────────────────────────────
 
-export async function runJob(session) {
+export async function runJob(session, opts = {}) {
   if (jobState.running) return;
   const { cookies, ctx } = session;
   const headers = buildHeaders(cookies, ctx);
+  const limit = opts.limit || 0; // 0 = no limit
 
   jobState = { running: true, phase: 'starting', progress: null, lastRun: null, lastError: null, counts: { likes: 0, bookmarks: 0, skipped: 0 } };
 
@@ -293,8 +294,12 @@ export async function runJob(session) {
     // ── Likes ────────────────────────────────────────────────────────────────
     jobState.phase = 'fetching likes list';
     console.log('[job] fetching liked videos list…');
-    const liked = await fetchLikedVideos(cookies, ctx);
-    console.log(`[job] found ${liked.length} liked videos`);
+    let liked = await fetchLikedVideos(cookies, ctx);
+    if (limit) {
+      console.log(`[job] test mode — trimming likes from ${liked.length} to ${limit}`);
+      liked = liked.slice(0, limit);
+    }
+    console.log(`[job] processing ${liked.length} liked videos`);
 
     const likesDir   = path.join(ARCHIVE_DIR, 'data', 'Likes');
     const coversDir  = path.join(likesDir, 'covers');
@@ -338,8 +343,12 @@ export async function runJob(session) {
     // ── Bookmarks ────────────────────────────────────────────────────────────
     jobState.phase = 'fetching bookmarks list';
     console.log('[job] fetching bookmarked videos list…');
-    const bookmarked = await fetchBookmarkedVideos(cookies, ctx);
-    console.log(`[job] found ${bookmarked.length} bookmarked videos`);
+    let bookmarked = await fetchBookmarkedVideos(cookies, ctx);
+    if (limit) {
+      console.log(`[job] test mode — trimming bookmarks from ${bookmarked.length} to ${limit}`);
+      bookmarked = bookmarked.slice(0, limit);
+    }
+    console.log(`[job] processing ${bookmarked.length} bookmarked videos`);
 
     if (bookmarked.length > 0) {
       const bmDir     = path.join(ARCHIVE_DIR, 'data', 'Bookmarks');

@@ -8,6 +8,7 @@ async function getSettings() {
       serverUrl: 'http://localhost:3847',
       intervalHours: 24,
       enabled: false,
+      testMode: false,
       lastPush: null,
       lastStatus: null,
     }, resolve);
@@ -35,6 +36,7 @@ async function init() {
   $('server-url').value  = s.serverUrl;
   $('interval').value    = s.intervalHours;
   $('enabled').checked   = s.enabled;
+  $('test-mode').checked = s.testMode;
 
   setStatus(s.lastStatus || '—');
   $('last-push').textContent = s.lastPush ? `Last push: ${s.lastPush}` : '';
@@ -72,6 +74,10 @@ $('enabled').addEventListener('change', async () => {
   chrome.runtime.sendMessage({ type: 'schedule_changed' });
 });
 
+$('test-mode').addEventListener('change', async () => {
+  await saveSettings({ testMode: $('test-mode').checked });
+});
+
 // ── Push now ──────────────────────────────────────────────────────────────────
 
 $('push-btn').addEventListener('click', async () => {
@@ -105,7 +111,11 @@ $('run-now-btn').addEventListener('click', async () => {
   const s = await getSettings();
   try {
     setStatus('triggering download job…');
-    const res  = await fetch(`${s.serverUrl}/run`, { method: 'POST' });
+    const res  = await fetch(`${s.serverUrl}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ testMode: s.testMode }),
+    });
     const data = await res.json();
     setStatus(data.message || 'job started');
   } catch (e) {

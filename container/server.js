@@ -75,8 +75,9 @@ app.post('/run', async (req, res) => {
   const job = getJobState();
   if (job.running) return res.status(409).json({ error: 'job already running' });
 
-  runNow(session).catch(e => console.error('[run] error:', e));
-  res.json({ message: 'job started' });
+  const limit = req.body?.testMode ? 2 : 0;
+  runNow(session, { limit }).catch(e => console.error('[run] error:', e));
+  res.json({ message: limit ? `test mode — pulling ${limit} items` : 'job started' });
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────────

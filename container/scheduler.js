@@ -24,7 +24,7 @@ export function scheduleJobs(getSession) {
   console.log(`[scheduler] download job scheduled: "${SCHEDULE}"`);
 }
 
-export async function runNow(session) {
-  console.log(`[scheduler] manual run triggered at ${new Date().toISOString()}`);
-  await runJob(session);
+export async function runNow(session, opts = {}) {
+  console.log(`[scheduler] manual run triggered at ${new Date().toISOString()}${opts.limit ? ` (test mode, limit=${opts.limit})` : ''}`);
+  await runJob(session, opts);
 }

@@ -1,6 +1,7 @@
 services:
   ttpull:
-    build: ./container
+    image: ghcr.io/nullredvector/ttpull:latest
+    # build: ./container  # uncomment for local dev
     ports:
       - "3847:3847"
     volumes:
