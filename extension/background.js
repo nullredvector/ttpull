@@ -45,9 +45,10 @@ chrome.alarms.onAlarm.addListener(alarm => {
 // Collect all TikTok cookies then ask the active TikTok tab for page context.
 // If no TikTok tab is open we skip the push (cookies alone aren't enough —
 // we need uid/secUid from the page to build API requests).
-async function pushSession() {
+async function pushSession({ manual = false } = {}) {
   const { serverUrl, enabled } = await getSettings();
-  if (!enabled || !serverUrl) return;
+  if (!manual && !enabled) return;
+  if (!serverUrl) return;
 
   await saveSettings({ lastStatus: 'collecting…' });
 
@@ -58,33 +59,65 @@ async function pushSession() {
     return;
   }
 
-  // 2. Page context from an open TikTok tab
-  const tabs = await chrome.tabs.query({ url: 'https://www.tiktok.com/*' });
-  if (!tabs.length) {
-    await saveSettings({ lastStatus: 'no TikTok tab open — navigate to tiktok.com first' });
+  // 2. Extract uid from cookies
+  const cookieVal = (name) => cookies.find(c => c.name === name)?.value || '';
+  const uid = cookieVal('uid_tt') || cookieVal('uid_tt_ss') || '';
+
+  if (!uid) {
+    await saveSettings({ lastStatus: 'no uid cookie — log in to tiktok.com first' });
     return;
   }
 
-  let pageCtx = null;
+  // 3. Get browser info from an open TikTok tab (for API request params)
+  let browserInfo = {
+    language: 'en-US', platform: 'MacIntel',
+    screenWidth: 1920, screenHeight: 1080,
+    timezone: 'America/New_York',
+  };
+  let deviceId = '';
+
+  const tabs = await chrome.tabs.query({ url: 'https://www.tiktok.com/*' });
   for (const tab of tabs) {
     try {
       const [result] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: () => window.__TTPULL_CTX__ || null,
+        world: 'MAIN',
+        func: () => {
+          let did = '';
+          try {
+            did = localStorage.getItem('tt_device_id')
+               || localStorage.getItem('device_id')
+               || '';
+          } catch {}
+          return {
+            deviceId: did,
+            browserInfo: {
+              language: navigator.language || 'en-US',
+              platform: /Win/.test(navigator.platform) ? 'Win32'
+                       : /Mac/.test(navigator.platform) ? 'MacIntel'
+                       : 'Linux x86_64',
+              screenWidth:  screen.width,
+              screenHeight: screen.height,
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            },
+          };
+        },
       });
-      if (result?.result) { pageCtx = result.result; break; }
+      if (result?.result) {
+        browserInfo = result.result.browserInfo;
+        deviceId = result.result.deviceId;
+        break;
+      }
     } catch { /* tab may be loading */ }
   }
 
-  if (!pageCtx) {
-    await saveSettings({ lastStatus: 'could not read page context — reload tiktok.com' });
-    return;
-  }
+  // 4. Build context — secUid will be resolved by the container via API
+  const ctx = { uid, secUid: '', uniqueId: '', region: 'US', deviceId, browserInfo };
 
-  // 3. POST to container
+  // 5. POST to container
   const payload = {
     cookies: cookies.map(c => ({ name: c.name, value: c.value, domain: c.domain })),
-    ctx: pageCtx,
+    ctx,
     pushedAt: Date.now(),
   };
 
@@ -109,7 +142,7 @@ async function pushSession() {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'push_now') {
-    pushSession().then(() => sendResponse({ ok: true }));
+    pushSession({ manual: true }).then(() => sendResponse({ ok: true }));
     return true; // async
   }
   if (msg.type === 'schedule_changed') {

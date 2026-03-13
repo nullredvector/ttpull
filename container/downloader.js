@@ -117,6 +117,50 @@ async function fetchBinary(url, headers) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// ── Resolve secUid if missing ─────────────────────────────────────────────────
+// TikTok no longer exposes __NEXT_DATA__ / SIGI_STATE on the page, so the
+// extension may only have uid from cookies. We call the user detail API to
+// get secUid which is required for the likes endpoint.
+
+async function resolveSecUid(cookies, ctx) {
+  if (ctx.secUid) return ctx.secUid;
+  if (!ctx.uid) return '';
+
+  const headers = buildHeaders(cookies, ctx);
+  const params = baseParams(cookies, ctx);
+  params.set('from_page', 'user');
+
+  // Try the passport/web/account/info endpoint first (returns logged-in user info)
+  try {
+    const url = `https://www.tiktok.com/passport/web/account/info/?${params}`;
+    const data = await fetchJson(url, headers);
+    const secUid = data?.data?.user_id_str ? '' : (data?.data?.sec_uid || '');
+    if (secUid) {
+      console.log(`[resolve] got secUid from passport API`);
+      return secUid;
+    }
+  } catch (e) {
+    console.log(`[resolve] passport API failed: ${e.message}`);
+  }
+
+  // Fallback: scrape the profile page for secUid in the HTML
+  try {
+    const profileUrl = 'https://www.tiktok.com/@me';
+    const res = await fetch(profileUrl, { headers: { ...headers, 'accept': 'text/html' }, redirect: 'follow' });
+    const html = await res.text();
+    const m = html.match(/"secUid"\s*:\s*"([^"]+)"/);
+    if (m) {
+      console.log(`[resolve] got secUid from profile page`);
+      return m[1];
+    }
+  } catch (e) {
+    console.log(`[resolve] profile scrape failed: ${e.message}`);
+  }
+
+  console.warn('[resolve] could not resolve secUid — likes API may fail');
+  return '';
+}
+
 // ── Likes API ─────────────────────────────────────────────────────────────────
 // GET https://m.tiktok.com/api/favorite/item_list/
 // Paginates via cursor. Returns all liked video metadata.
@@ -291,6 +335,12 @@ export async function runJob(session, opts = {}) {
   jobState = { running: true, phase: 'starting', progress: null, lastRun: null, lastError: null, counts: { likes: 0, bookmarks: 0, skipped: 0 } };
 
   try {
+    // ── Resolve secUid if needed ──────────────────────────────────────────────
+    if (!ctx.secUid) {
+      jobState.phase = 'resolving secUid';
+      ctx.secUid = await resolveSecUid(cookies, ctx);
+    }
+
     // ── Likes ────────────────────────────────────────────────────────────────
     jobState.phase = 'fetching likes list';
     console.log('[job] fetching liked videos list…');
