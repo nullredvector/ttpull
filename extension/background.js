@@ -201,7 +201,7 @@ async function fetchVideoListInBrowser(tab, type, limit) {
 
       // Try each endpoint with secUid included
       let workingEndpoint = null;
-      let probeResponse = null;
+      const allProbes = [];
       for (const ep of endpointList) {
         try {
           const params = new URLSearchParams({ count: '2', cursor: '0' });
@@ -211,27 +211,29 @@ async function fetchVideoListInBrowser(tab, type, limit) {
           const res = await fetch(probeUrl, { credentials: 'include' });
           const text = await res.text();
           let data;
-          try { data = JSON.parse(text); } catch { continue; }
+          try { data = JSON.parse(text); } catch {
+            allProbes.push({ endpoint: ep, error: 'non-JSON', textLen: text.length, preview: text.slice(0, 200) });
+            continue;
+          }
 
           const sc = data.statusCode ?? data.status_code ?? -1;
           const itemCount = (data.itemList || data.item_list || []).length;
-          probeResponse = { endpoint: ep, status: res.status, statusCode: sc, keys: Object.keys(data), itemCount, raw: JSON.stringify(data).slice(0, 500) };
+          allProbes.push({ endpoint: ep, status: res.status, statusCode: sc, keys: Object.keys(data), itemCount, raw: JSON.stringify(data).slice(0, 1000) });
 
           if (sc === 0 && itemCount > 0) {
             workingEndpoint = ep;
             break;
           }
-          // Accept statusCode 0 even with 0 items as last resort
           if (sc === 0 && !workingEndpoint) {
             workingEndpoint = ep;
           }
         } catch (e) {
-          probeResponse = { endpoint: ep, error: e.message };
+          allProbes.push({ endpoint: ep, error: e.message });
         }
       }
 
       if (!workingEndpoint) {
-        return { error: 'no working endpoint found', probe: probeResponse, secUid, videos: [] };
+        return { error: 'no working endpoint found', probes: allProbes, secUid, videos: [] };
       }
 
       // ── Paginate ──────────────────────────────────────────────────────────
@@ -296,7 +298,7 @@ async function fetchVideoListInBrowser(tab, type, limit) {
         }
       }
 
-      return { videos, endpoint: workingEndpoint, secUid };
+      return { videos, endpoint: workingEndpoint, secUid, probes: allProbes };
     },
     args: [type, limit],
   });
@@ -349,8 +351,8 @@ async function runFullSync({ testMode = false } = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        likes: { count: likes.length, error: likesResult.error, probe: likesResult.probe, endpoint: likesResult.endpoint, secUid: likesResult.secUid },
-        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, probe: bookmarksResult.probe, endpoint: bookmarksResult.endpoint, secUid: bookmarksResult.secUid },
+        likes: { count: likes.length, error: likesResult.error, probes: likesResult.probes, endpoint: likesResult.endpoint, secUid: likesResult.secUid },
+        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, probes: bookmarksResult.probes, endpoint: bookmarksResult.endpoint, secUid: bookmarksResult.secUid },
       }),
     });
   } catch {}
