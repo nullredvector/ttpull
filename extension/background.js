@@ -154,7 +154,39 @@ async function fetchVideoListInBrowser(tab, type, limit) {
     func: async (type, limit) => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-      // Try multiple endpoint variations — TikTok changes these frequently
+      // ── Resolve secUid ────────────────────────────────────────────────────
+      // Required for the likes API to know whose likes to return.
+      // Try multiple methods since page globals are no longer available.
+      let secUid = '';
+
+      // Method 1: look for secUid in any script tag content
+      try {
+        const scripts = document.querySelectorAll('script');
+        for (const s of scripts) {
+          const m = s.textContent.match(/"secUid"\s*:\s*"([^"]+)"/);
+          if (m) { secUid = m[1]; break; }
+        }
+      } catch {}
+
+      // Method 2: fetch /@me which redirects to /@username, then parse profile
+      if (!secUid) {
+        try {
+          const res = await fetch('https://www.tiktok.com/api/user/detail/', { credentials: 'include' });
+          const data = await res.json();
+          secUid = data?.userInfo?.user?.secUid || '';
+        } catch {}
+      }
+
+      // Method 3: try passport API
+      if (!secUid) {
+        try {
+          const res = await fetch('https://www.tiktok.com/passport/web/account/info/', { credentials: 'include' });
+          const data = await res.json();
+          secUid = data?.data?.sec_uid || '';
+        } catch {}
+      }
+
+      // ── Endpoint probing ──────────────────────────────────────────────────
       const LIKES_ENDPOINTS = [
         '/api/favorite/item_list/',
         '/api/user/favorite/',
@@ -167,24 +199,31 @@ async function fetchVideoListInBrowser(tab, type, limit) {
 
       const endpointList = type === 'likes' ? LIKES_ENDPOINTS : BOOKMARK_ENDPOINTS;
 
-      // Try each endpoint with a simple probe first
+      // Try each endpoint with secUid included
       let workingEndpoint = null;
       let probeResponse = null;
       for (const ep of endpointList) {
         try {
-          const probeUrl = `https://www.tiktok.com${ep}?count=2&cursor=0`;
+          const params = new URLSearchParams({ count: '2', cursor: '0' });
+          if (secUid) params.set('secUid', secUid);
+
+          const probeUrl = `https://www.tiktok.com${ep}?${params}`;
           const res = await fetch(probeUrl, { credentials: 'include' });
           const text = await res.text();
           let data;
           try { data = JSON.parse(text); } catch { continue; }
 
           const sc = data.statusCode ?? data.status_code ?? -1;
-          // Log the full response for debugging
-          probeResponse = { endpoint: ep, status: res.status, statusCode: sc, keys: Object.keys(data), hasItems: !!(data.itemList || data.item_list), itemCount: (data.itemList || data.item_list || []).length, raw: JSON.stringify(data).slice(0, 500) };
+          const itemCount = (data.itemList || data.item_list || []).length;
+          probeResponse = { endpoint: ep, status: res.status, statusCode: sc, keys: Object.keys(data), itemCount, raw: JSON.stringify(data).slice(0, 500) };
 
-          if (sc === 0) {
+          if (sc === 0 && itemCount > 0) {
             workingEndpoint = ep;
             break;
+          }
+          // Accept statusCode 0 even with 0 items as last resort
+          if (sc === 0 && !workingEndpoint) {
+            workingEndpoint = ep;
           }
         } catch (e) {
           probeResponse = { endpoint: ep, error: e.message };
@@ -192,21 +231,27 @@ async function fetchVideoListInBrowser(tab, type, limit) {
       }
 
       if (!workingEndpoint) {
-        return { error: `no working endpoint found`, probe: probeResponse, videos: [] };
+        return { error: 'no working endpoint found', probe: probeResponse, secUid, videos: [] };
       }
 
-      // Now paginate the working endpoint
+      // ── Paginate ──────────────────────────────────────────────────────────
       const videos = [];
       let cursor = '0';
       let hasMore = true;
 
       while (hasMore) {
-        const url = `https://www.tiktok.com${workingEndpoint}?count=${limit ? Math.min(limit, 30) : 30}&cursor=${cursor}`;
+        const params = new URLSearchParams({
+          count: String(limit ? Math.min(limit, 30) : 30),
+          cursor,
+        });
+        if (secUid) params.set('secUid', secUid);
+
+        const url = `https://www.tiktok.com${workingEndpoint}?${params}`;
         try {
           const res = await fetch(url, { credentials: 'include' });
           const data = await res.json();
           const sc = data.statusCode ?? data.status_code ?? -1;
-          if (sc !== 0) return { error: `API error ${sc}: ${data.statusMsg || data.status_msg || ''}`, videos };
+          if (sc !== 0) return { error: `API error ${sc}: ${data.statusMsg || data.status_msg || ''}`, secUid, videos };
 
           const items = data.itemList || data.item_list || [];
           if (items.length === 0) break;
@@ -247,11 +292,11 @@ async function fetchVideoListInBrowser(tab, type, limit) {
 
           await sleep(800 + Math.random() * 400);
         } catch (e) {
-          return { error: e.message, videos };
+          return { error: e.message, secUid, videos };
         }
       }
 
-      return { videos, endpoint: workingEndpoint };
+      return { videos, endpoint: workingEndpoint, secUid };
     },
     args: [type, limit],
   });
@@ -304,8 +349,8 @@ async function runFullSync({ testMode = false } = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        likes: { count: likes.length, error: likesResult.error, probe: likesResult.probe, endpoint: likesResult.endpoint },
-        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, probe: bookmarksResult.probe, endpoint: bookmarksResult.endpoint },
+        likes: { count: likes.length, error: likesResult.error, probe: likesResult.probe, endpoint: likesResult.endpoint, secUid: likesResult.secUid },
+        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, probe: bookmarksResult.probe, endpoint: bookmarksResult.endpoint, secUid: bookmarksResult.secUid },
       }),
     });
   } catch {}
