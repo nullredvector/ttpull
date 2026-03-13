@@ -93,7 +93,11 @@ function baseParams(cookies, ctx) {
 async function fetchJson(url, headers, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetch(url, { headers });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      const res = await fetch(url, { headers, signal: controller.signal });
+      clearTimeout(timeout);
+
       if (res.status === 429) {
         const wait = 10000 * (i + 1);
         console.log(`[fetch] rate limited, waiting ${wait / 1000}s`);
@@ -101,8 +105,17 @@ async function fetchJson(url, headers, retries = 3) {
         continue;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
+
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        // Not JSON — likely a CAPTCHA or login page
+        console.error(`[fetch] non-JSON response (${text.length} chars): ${text.slice(0, 200)}`);
+        throw new Error('non-JSON response (possible CAPTCHA or auth redirect)');
+      }
     } catch (e) {
+      console.log(`[fetch] attempt ${i + 1}/${retries} failed: ${e.message}`);
       if (i === retries - 1) throw e;
       await sleep(3000 * (i + 1));
     }
@@ -124,6 +137,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function resolveSecUid(cookies, ctx) {
   if (ctx.secUid) return ctx.secUid;
+  console.log(`[resolve] uid=${ctx.uid || '(none)'}, attempting to resolve secUid…`);
   if (!ctx.uid) return '';
 
   const headers = buildHeaders(cookies, ctx);
@@ -165,16 +179,17 @@ async function resolveSecUid(cookies, ctx) {
 // GET https://m.tiktok.com/api/favorite/item_list/
 // Paginates via cursor. Returns all liked video metadata.
 
-async function fetchLikedVideos(cookies, ctx) {
+async function fetchLikedVideos(cookies, ctx, limit = 0) {
   const headers = buildHeaders(cookies, ctx);
   const videos  = [];
   let cursor    = '0';
   let hasMore   = true;
   let page      = 0;
+  const fetchCount = limit ? Math.min(limit, 30) : 30;
 
   while (hasMore) {
     const params = baseParams(cookies, ctx);
-    params.set('count',   '30');
+    params.set('count',   String(fetchCount));
     params.set('cursor',  cursor);
     params.set('secUid',  ctx.secUid || '');
 
@@ -183,11 +198,17 @@ async function fetchLikedVideos(cookies, ctx) {
 
     const data = await fetchJson(url, headers);
 
-    if (data.statusCode !== 0 && data.status_code !== 0) {
-      throw new Error(`Likes API error: ${data.statusMsg || data.status_msg || data.statusCode}`);
+    if (!data || (data.statusCode !== 0 && data.status_code !== 0)) {
+      const msg = data?.statusMsg || data?.status_msg || data?.statusCode || 'unknown';
+      throw new Error(`Likes API error: ${msg}`);
     }
 
     const items = data.itemList || data.item_list || [];
+    if (items.length === 0) {
+      console.log('[likes] no items returned — stopping');
+      break;
+    }
+
     for (const item of items) {
       videos.push({
         id:         item.id,
@@ -199,6 +220,12 @@ async function fetchLikedVideos(cookies, ctx) {
         duration:   item.video?.duration || 0,
         createTime: item.createTime || 0,
       });
+      if (limit && videos.length >= limit) break;
+    }
+
+    if (limit && videos.length >= limit) {
+      console.log(`[likes] reached test mode limit (${limit})`);
+      break;
     }
 
     hasMore = data.hasMore ?? false;
@@ -249,7 +276,7 @@ async function probeBookmarkEndpoint(cookies, ctx) {
   return null;
 }
 
-async function fetchBookmarkedVideos(cookies, ctx) {
+async function fetchBookmarkedVideos(cookies, ctx, limit = 0) {
   const headers  = buildHeaders(cookies, ctx);
   const endpoint = await probeBookmarkEndpoint(cookies, ctx);
 
@@ -262,21 +289,27 @@ async function fetchBookmarkedVideos(cookies, ctx) {
   let cursor   = '0';
   let hasMore  = true;
   let page     = 0;
+  const fetchCount = limit ? Math.min(limit, 30) : 30;
 
   while (hasMore) {
     const params = baseParams(cookies, ctx);
-    params.set('count',  '30');
+    params.set('count',  String(fetchCount));
     params.set('cursor', cursor);
 
     console.log(`[bookmarks] page ${++page} cursor=${cursor}`);
     const data = await fetchJson(`${endpoint}?${params}`, headers);
 
-    if (data.statusCode !== 0 && data.status_code !== 0) {
-      console.warn(`[bookmarks] API returned ${data.statusCode ?? data.status_code}: ${data.statusMsg ?? data.status_msg}`);
+    if (!data || (data.statusCode !== 0 && data.status_code !== 0)) {
+      console.warn(`[bookmarks] API returned ${data?.statusCode ?? data?.status_code}: ${data?.statusMsg ?? data?.status_msg}`);
       break;
     }
 
     const items = data.itemList || data.item_list || [];
+    if (items.length === 0) {
+      console.log('[bookmarks] no items returned — stopping');
+      break;
+    }
+
     for (const item of items) {
       videos.push({
         id:         item.id,
@@ -288,6 +321,12 @@ async function fetchBookmarkedVideos(cookies, ctx) {
         duration:   item.video?.duration || 0,
         createTime: item.createTime || 0,
       });
+      if (limit && videos.length >= limit) break;
+    }
+
+    if (limit && videos.length >= limit) {
+      console.log(`[bookmarks] reached test mode limit (${limit})`);
+      break;
     }
 
     hasMore = data.hasMore ?? false;
@@ -343,12 +382,8 @@ export async function runJob(session, opts = {}) {
 
     // ── Likes ────────────────────────────────────────────────────────────────
     jobState.phase = 'fetching likes list';
-    console.log('[job] fetching liked videos list…');
-    let liked = await fetchLikedVideos(cookies, ctx);
-    if (limit) {
-      console.log(`[job] test mode — trimming likes from ${liked.length} to ${limit}`);
-      liked = liked.slice(0, limit);
-    }
+    console.log(`[job] fetching liked videos list…${limit ? ` (test mode: limit ${limit})` : ''}`);
+    const liked = await fetchLikedVideos(cookies, ctx, limit);
     console.log(`[job] processing ${liked.length} liked videos`);
 
     const likesDir   = path.join(ARCHIVE_DIR, 'data', 'Likes');
@@ -392,12 +427,8 @@ export async function runJob(session, opts = {}) {
 
     // ── Bookmarks ────────────────────────────────────────────────────────────
     jobState.phase = 'fetching bookmarks list';
-    console.log('[job] fetching bookmarked videos list…');
-    let bookmarked = await fetchBookmarkedVideos(cookies, ctx);
-    if (limit) {
-      console.log(`[job] test mode — trimming bookmarks from ${bookmarked.length} to ${limit}`);
-      bookmarked = bookmarked.slice(0, limit);
-    }
+    console.log(`[job] fetching bookmarked videos list…${limit ? ` (test mode: limit ${limit})` : ''}`);
+    const bookmarked = await fetchBookmarkedVideos(cookies, ctx, limit);
     console.log(`[job] processing ${bookmarked.length} bookmarked videos`);
 
     if (bookmarked.length > 0) {
