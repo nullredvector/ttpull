@@ -167,30 +167,68 @@ async function fetchLikedVideos(cookies, ctx) {
   return videos;
 }
 
-// ── Bookmarks/Collect API ─────────────────────────────────────────────────────
-// GET https://www.tiktok.com/api/user/collect/item_list/
-// Same pagination pattern as likes.
+// ── Bookmarks/Saves/Favorites API ────────────────────────────────────────────
+// TikTok has used multiple endpoint paths for this feature across versions.
+// We try each in order and use the first one that returns a non-error response.
+//
+// Known candidates:
+//   /api/user/collect/item_list/    — "Favorites" (current web, 2024+)
+//   /api/item/bookmark/item_list/   — older "Bookmarks" endpoint
+//   /api/user/saves/item_list/      — "Saves" branding seen in some regions
+
+const BOOKMARK_ENDPOINTS = [
+  'https://www.tiktok.com/api/user/collect/item_list/',
+  'https://www.tiktok.com/api/item/bookmark/item_list/',
+  'https://www.tiktok.com/api/user/saves/item_list/',
+  'https://m.tiktok.com/api/user/collect/item_list/',
+];
+
+async function probeBookmarkEndpoint(cookies, ctx) {
+  const headers = buildHeaders(cookies, ctx);
+  for (const base of BOOKMARK_ENDPOINTS) {
+    const params = baseParams(cookies, ctx);
+    params.set('count', '1');
+    params.set('cursor', '0');
+    try {
+      const data = await fetchJson(`${base}?${params}`, headers);
+      const ok = data.statusCode === 0 || data.status_code === 0;
+      if (ok) {
+        console.log(`[bookmarks] using endpoint: ${base}`);
+        return base;
+      }
+      console.log(`[bookmarks] ${base} → statusCode ${data.statusCode ?? data.status_code}, trying next`);
+    } catch (e) {
+      console.log(`[bookmarks] ${base} → ${e.message}, trying next`);
+    }
+    await sleep(500);
+  }
+  return null;
+}
 
 async function fetchBookmarkedVideos(cookies, ctx) {
-  const headers = buildHeaders(cookies, ctx);
-  const videos  = [];
-  let cursor    = '0';
-  let hasMore   = true;
-  let page      = 0;
+  const headers  = buildHeaders(cookies, ctx);
+  const endpoint = await probeBookmarkEndpoint(cookies, ctx);
+
+  if (!endpoint) {
+    console.warn('[bookmarks] no working endpoint found — collection may be private or feature unavailable');
+    return [];
+  }
+
+  const videos = [];
+  let cursor   = '0';
+  let hasMore  = true;
+  let page     = 0;
 
   while (hasMore) {
     const params = baseParams(cookies, ctx);
     params.set('count',  '30');
     params.set('cursor', cursor);
 
-    const url  = `https://www.tiktok.com/api/user/collect/item_list/?${params}`;
     console.log(`[bookmarks] page ${++page} cursor=${cursor}`);
-
-    const data = await fetchJson(url, headers);
+    const data = await fetchJson(`${endpoint}?${params}`, headers);
 
     if (data.statusCode !== 0 && data.status_code !== 0) {
-      // Bookmarks may be private — log and bail gracefully
-      console.warn(`[bookmarks] API returned ${data.statusCode}: ${data.statusMsg}`);
+      console.warn(`[bookmarks] API returned ${data.statusCode ?? data.status_code}: ${data.statusMsg ?? data.status_msg}`);
       break;
     }
 
