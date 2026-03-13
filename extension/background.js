@@ -154,90 +154,57 @@ async function fetchVideoListInBrowser(tab, type, limit) {
     func: async (type, limit) => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-      // Use XMLHttpRequest — TikTok's anti-bot code patches XHR to add
-      // X-Bogus / _signature automatically. fetch() may not get patched.
-      function xhrGet(url) {
-        return new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('GET', url, true);
-          xhr.withCredentials = true;
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              try { resolve(JSON.parse(xhr.responseText)); }
-              catch { reject(new Error(`non-JSON response (${xhr.responseText.length} chars)`)); }
-            } else {
-              reject(new Error(`HTTP ${xhr.status}`));
-            }
-          };
-          xhr.onerror = () => reject(new Error('network error'));
-          xhr.ontimeout = () => reject(new Error('timeout'));
-          xhr.timeout = 15000;
-          xhr.send();
-        });
-      }
+      // Try multiple endpoint variations — TikTok changes these frequently
+      const LIKES_ENDPOINTS = [
+        '/api/favorite/item_list/',
+        '/api/user/favorite/',
+      ];
+      const BOOKMARK_ENDPOINTS = [
+        '/api/user/collect/item_list/',
+        '/api/item/bookmark/item_list/',
+        '/api/user/saves/item_list/',
+      ];
 
-      // Extract cookies for params
-      const cookies = document.cookie.split(';').reduce((acc, c) => {
-        const [k, ...v] = c.trim().split('=');
-        acc[k] = v.join('=');
-        return acc;
-      }, {});
+      const endpointList = type === 'likes' ? LIKES_ENDPOINTS : BOOKMARK_ENDPOINTS;
 
-      // Build query params matching what the site's own code sends
-      function buildParams(cursor) {
-        const p = new URLSearchParams({
-          aid:              '1988',
-          app_language:     navigator.language?.split('-')[0] || 'en',
-          app_name:         'tiktok_web',
-          browser_language: navigator.language || 'en-US',
-          browser_name:     'Mozilla',
-          browser_online:   'true',
-          browser_platform: navigator.platform || 'MacIntel',
-          browser_version:  '5.0',
-          channel:          'tiktok_web',
-          cookie_enabled:   'true',
-          device_platform:  'web_pc',
-          focus_state:      'true',
-          from_page:        'user',
-          history_len:      String(history.length),
-          is_fullscreen:    'false',
-          is_page_visible:  'true',
-          os:               /Mac/.test(navigator.platform) ? 'mac' : /Win/.test(navigator.platform) ? 'windows' : 'linux',
-          priority_region:  '',
-          referer:          '',
-          region:           'US',
-          screen_height:    String(screen.height),
-          screen_width:     String(screen.width),
-          tz_name:          Intl.DateTimeFormat().resolvedOptions().timeZone,
-          webcast_language: navigator.language?.split('-')[0] || 'en',
-          msToken:          cookies.msToken || '',
-          count:            String(limit ? Math.min(limit, 30) : 30),
-          cursor:           cursor,
-        });
-        // Add secUid for likes
-        if (type === 'likes') {
-          p.set('secUid', cookies.secUid || '');
+      // Try each endpoint with a simple probe first
+      let workingEndpoint = null;
+      let probeResponse = null;
+      for (const ep of endpointList) {
+        try {
+          const probeUrl = `https://www.tiktok.com${ep}?count=2&cursor=0`;
+          const res = await fetch(probeUrl, { credentials: 'include' });
+          const text = await res.text();
+          let data;
+          try { data = JSON.parse(text); } catch { continue; }
+
+          const sc = data.statusCode ?? data.status_code ?? -1;
+          // Log the full response for debugging
+          probeResponse = { endpoint: ep, status: res.status, statusCode: sc, keys: Object.keys(data), hasItems: !!(data.itemList || data.item_list), itemCount: (data.itemList || data.item_list || []).length, raw: JSON.stringify(data).slice(0, 500) };
+
+          if (sc === 0) {
+            workingEndpoint = ep;
+            break;
+          }
+        } catch (e) {
+          probeResponse = { endpoint: ep, error: e.message };
         }
-        return p;
       }
 
-      // Determine endpoint
-      const endpoints = {
-        likes:     'https://www.tiktok.com/api/favorite/item_list/',
-        bookmarks: 'https://www.tiktok.com/api/user/collect/item_list/',
-      };
-      const endpoint = endpoints[type];
-      if (!endpoint) return { error: `unknown type: ${type}` };
+      if (!workingEndpoint) {
+        return { error: `no working endpoint found`, probe: probeResponse, videos: [] };
+      }
 
+      // Now paginate the working endpoint
       const videos = [];
       let cursor = '0';
       let hasMore = true;
 
       while (hasMore) {
-        const params = buildParams(cursor);
-        const url = `${endpoint}?${params}`;
+        const url = `https://www.tiktok.com${workingEndpoint}?count=${limit ? Math.min(limit, 30) : 30}&cursor=${cursor}`;
         try {
-          const data = await xhrGet(url);
+          const res = await fetch(url, { credentials: 'include' });
+          const data = await res.json();
           const sc = data.statusCode ?? data.status_code ?? -1;
           if (sc !== 0) return { error: `API error ${sc}: ${data.statusMsg || data.status_msg || ''}`, videos };
 
@@ -245,11 +212,10 @@ async function fetchVideoListInBrowser(tab, type, limit) {
           if (items.length === 0) break;
 
           for (const item of items) {
-            // Prefer highest quality: downloadAddr > bitrateInfo max > playAddr
             const vid = item.video || {};
             let videoUrl = '';
 
-            // bitrateInfo contains all quality levels — pick the highest bitrate
+            // bitrateInfo: pick highest bitrate for best quality
             if (vid.bitrateInfo && vid.bitrateInfo.length > 0) {
               const best = vid.bitrateInfo.reduce((a, b) =>
                 (b.Bitrate || b.bitrate || 0) > (a.Bitrate || a.bitrate || 0) ? b : a
@@ -258,8 +224,6 @@ async function fetchVideoListInBrowser(tab, type, limit) {
                       || best.playAddr?.urlList?.[0]
                       || best.PlayAddr || '';
             }
-
-            // downloadAddr is usually the original quality
             if (!videoUrl) videoUrl = vid.downloadAddr || '';
             if (!videoUrl) videoUrl = vid.playAddr || '';
 
@@ -287,7 +251,7 @@ async function fetchVideoListInBrowser(tab, type, limit) {
         }
       }
 
-      return { videos };
+      return { videos, endpoint: workingEndpoint };
     },
     args: [type, limit],
   });
@@ -321,7 +285,7 @@ async function runFullSync({ testMode = false } = {}) {
   // Fetch likes from browser
   const likesResult = await fetchVideoListInBrowser(tab, 'likes', limit);
   if (likesResult.error) {
-    console.warn('[ttpull] likes fetch error:', likesResult.error);
+    console.warn('[ttpull] likes fetch error:', likesResult.error, likesResult.probe || '');
   }
   const likes = likesResult.videos || [];
 
@@ -330,9 +294,21 @@ async function runFullSync({ testMode = false } = {}) {
   // Fetch bookmarks from browser
   const bookmarksResult = await fetchVideoListInBrowser(tab, 'bookmarks', limit);
   if (bookmarksResult.error) {
-    console.warn('[ttpull] bookmarks fetch error:', bookmarksResult.error);
+    console.warn('[ttpull] bookmarks fetch error:', bookmarksResult.error, bookmarksResult.probe || '');
   }
   const bookmarks = bookmarksResult.videos || [];
+
+  // Send debug info to container for inspection
+  try {
+    await fetch(`${serverUrl}/debug/fetch-result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        likes: { count: likes.length, error: likesResult.error, probe: likesResult.probe, endpoint: likesResult.endpoint },
+        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, probe: bookmarksResult.probe, endpoint: bookmarksResult.endpoint },
+      }),
+    });
+  } catch {}
 
   await saveSettings({ lastStatus: `got ${likes.length} likes + ${bookmarks.length} bookmarks, sending to container…` });
 

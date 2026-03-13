@@ -128,6 +128,17 @@ app.get('/logs', (req, res) => {
 
 // ── Debug session ────────────────────────────────────────────────────────────
 
+let lastFetchResult = null;
+app.post('/debug/fetch-result', (req, res) => {
+  lastFetchResult = req.body;
+  console.log('[debug] fetch result:', JSON.stringify(req.body, null, 2));
+  res.json({ ok: true });
+});
+
+app.get('/debug/fetch-result', (req, res) => {
+  res.json(lastFetchResult || { none: true });
+});
+
 app.get('/debug/session', (req, res) => {
   if (!session) return res.json({ hasSession: false });
   res.json({
