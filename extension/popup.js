@@ -109,18 +109,11 @@ $('job-status-btn').addEventListener('click', async () => {
 
 $('run-now-btn').addEventListener('click', async () => {
   const s = await getSettings();
-  try {
-    setStatus('triggering download job…');
-    const res  = await fetch(`${s.serverUrl}/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ testMode: s.testMode }),
-    });
-    const data = await res.json();
-    setStatus(data.message || 'job started');
-  } catch (e) {
-    setStatus(`connection failed: ${e.message}`);
-  }
+  setStatus('fetching video lists from browser…');
+  chrome.runtime.sendMessage({ type: 'run_now', testMode: s.testMode }, async () => {
+    const updated = await getSettings();
+    setStatus(updated.lastStatus);
+  });
 });
 
 // ── Poll status while open ────────────────────────────────────────────────────

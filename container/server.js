@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SESSION_FILE = path.join(__dirname, 'session.json');
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // Allow extension (chrome-extension://*) and localhost origins
 app.use((req, res, next) => {
@@ -68,7 +68,7 @@ app.get('/status', (req, res) => {
   });
 });
 
-// ── Manual trigger ────────────────────────────────────────────────────────────
+// ── Manual trigger (legacy — container fetches lists itself) ─────────────────
 
 app.post('/run', async (req, res) => {
   if (!session) return res.status(400).json({ error: 'no session — push from extension first' });
@@ -78,6 +78,30 @@ app.post('/run', async (req, res) => {
   const limit = req.body?.testMode ? 2 : 0;
   runNow(session, { limit }).catch(e => console.error('[run] error:', e));
   res.json({ message: limit ? `test mode — pulling ${limit} items` : 'job started' });
+});
+
+// ── Receive pre-fetched video metadata from extension ───────────────────────
+// The extension fetches liked/bookmarked video lists from the browser context
+// (where anti-bot signatures are auto-applied) and sends them here.
+// The container then downloads the actual video/cover files from CDN URLs.
+
+app.post('/videos', async (req, res) => {
+  if (!session) return res.status(400).json({ error: 'no session — push from extension first' });
+  const job = getJobState();
+  if (job.running) return res.status(409).json({ error: 'job already running' });
+
+  const { likes, bookmarks } = req.body;
+  if (!Array.isArray(likes) && !Array.isArray(bookmarks)) {
+    return res.status(400).json({ error: 'likes and/or bookmarks arrays required' });
+  }
+
+  const { downloadVideos } = await import('./downloader.js');
+  downloadVideos(session, { likes: likes || [], bookmarks: bookmarks || [] })
+    .catch(e => console.error('[videos] error:', e));
+
+  res.json({
+    message: `downloading ${(likes || []).length} likes + ${(bookmarks || []).length} bookmarks`,
+  });
 });
 
 // ── Logs (ring buffer) ───────────────────────────────────────────────────────

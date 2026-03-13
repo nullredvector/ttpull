@@ -481,3 +481,110 @@ export async function runJob(session, opts = {}) {
     jobState.progress = null;
   }
 }
+
+// ── Download from pre-fetched metadata ────────────────────────────────────────
+// Called when the extension has already fetched the video lists in-browser
+// (where anti-bot signatures are handled) and sent us the metadata.
+// We just need to download the actual files from CDN URLs.
+
+export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
+  if (jobState.running) return;
+  const { cookies, ctx } = session;
+  const headers = buildHeaders(cookies, ctx);
+
+  jobState = { running: true, phase: 'starting', progress: null, lastRun: null, lastError: null, counts: { likes: 0, bookmarks: 0, skipped: 0 } };
+
+  try {
+    // ── Likes ──────────────────────────────────────────────────────────────
+    if (likes.length > 0) {
+      console.log(`[dl] downloading ${likes.length} liked videos`);
+      const likesDir  = path.join(ARCHIVE_DIR, 'data', 'Likes');
+      const coversDir = path.join(likesDir, 'covers');
+      const videosDir = path.join(likesDir, 'videos');
+      await fs.mkdir(coversDir, { recursive: true });
+      await fs.mkdir(videosDir, { recursive: true });
+
+      jobState.phase = 'downloading likes';
+      for (let i = 0; i < likes.length; i++) {
+        const v = likes[i];
+        jobState.progress = `${i + 1} / ${likes.length}`;
+
+        const videoPath = path.join(videosDir, `${v.id}.mp4`);
+        const coverPath = path.join(coversDir, `${v.id}.jpg`);
+
+        const [videoExists, coverExists] = await Promise.all([
+          fs.access(videoPath).then(() => true).catch(() => false),
+          fs.access(coverPath).then(() => true).catch(() => false),
+        ]);
+
+        if (!videoExists && v.videoUrl) {
+          console.log(`[dl:likes] ${i + 1}/${likes.length} downloading ${v.id}`);
+          const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(() => false);
+          if (ok) jobState.counts.likes++; else jobState.counts.skipped++;
+          await sleep(300 + Math.random() * 200);
+        }
+
+        if (!coverExists && v.coverUrl) {
+          const buf = await fetchBinary(v.coverUrl, headers).catch(() => null);
+          if (buf) await fs.writeFile(coverPath, buf);
+        }
+      }
+
+      await fs.writeFile(
+        path.join(likesDir, 'manifest.json'),
+        JSON.stringify({ updatedAt: new Date().toISOString(), count: likes.length, videos: likes }, null, 2),
+      );
+    }
+
+    // ── Bookmarks ────────────────────────────────────────────────────────────
+    if (bookmarks.length > 0) {
+      console.log(`[dl] downloading ${bookmarks.length} bookmarked videos`);
+      const bmDir    = path.join(ARCHIVE_DIR, 'data', 'Bookmarks');
+      const bmCovers = path.join(bmDir, 'covers');
+      const bmVideos = path.join(bmDir, 'videos');
+      await fs.mkdir(bmCovers, { recursive: true });
+      await fs.mkdir(bmVideos, { recursive: true });
+
+      jobState.phase = 'downloading bookmarks';
+      for (let i = 0; i < bookmarks.length; i++) {
+        const v = bookmarks[i];
+        jobState.progress = `${i + 1} / ${bookmarks.length}`;
+
+        const videoPath = path.join(bmVideos, `${v.id}.mp4`);
+        const coverPath = path.join(bmCovers, `${v.id}.jpg`);
+
+        const [videoExists, coverExists] = await Promise.all([
+          fs.access(videoPath).then(() => true).catch(() => false),
+          fs.access(coverPath).then(() => true).catch(() => false),
+        ]);
+
+        if (!videoExists && v.videoUrl) {
+          console.log(`[dl:bookmarks] ${i + 1}/${bookmarks.length} downloading ${v.id}`);
+          const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(() => false);
+          if (ok) jobState.counts.bookmarks++; else jobState.counts.skipped++;
+          await sleep(300 + Math.random() * 200);
+        }
+
+        if (!coverExists && v.coverUrl) {
+          const buf = await fetchBinary(v.coverUrl, headers).catch(() => null);
+          if (buf) await fs.writeFile(coverPath, buf);
+        }
+      }
+
+      await fs.writeFile(
+        path.join(bmDir, 'manifest.json'),
+        JSON.stringify({ updatedAt: new Date().toISOString(), count: bookmarks.length, videos: bookmarks }, null, 2),
+      );
+    }
+
+    jobState.lastRun = new Date().toISOString();
+    console.log(`[dl] done — likes: ${jobState.counts.likes}, bookmarks: ${jobState.counts.bookmarks}, skipped: ${jobState.counts.skipped}`);
+  } catch (e) {
+    jobState.lastError = e.message;
+    console.error('[dl] error:', e);
+  } finally {
+    jobState.running  = false;
+    jobState.phase    = null;
+    jobState.progress = null;
+  }
+}
