@@ -154,10 +154,77 @@ async function fetchVideoListInBrowser(tab, type, limit) {
     func: async (type, limit) => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+      // Use XMLHttpRequest — TikTok's anti-bot code patches XHR to add
+      // X-Bogus / _signature automatically. fetch() may not get patched.
+      function xhrGet(url) {
+        return new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('GET', url, true);
+          xhr.withCredentials = true;
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try { resolve(JSON.parse(xhr.responseText)); }
+              catch { reject(new Error(`non-JSON response (${xhr.responseText.length} chars)`)); }
+            } else {
+              reject(new Error(`HTTP ${xhr.status}`));
+            }
+          };
+          xhr.onerror = () => reject(new Error('network error'));
+          xhr.ontimeout = () => reject(new Error('timeout'));
+          xhr.timeout = 15000;
+          xhr.send();
+        });
+      }
+
+      // Extract cookies for params
+      const cookies = document.cookie.split(';').reduce((acc, c) => {
+        const [k, ...v] = c.trim().split('=');
+        acc[k] = v.join('=');
+        return acc;
+      }, {});
+
+      // Build query params matching what the site's own code sends
+      function buildParams(cursor) {
+        const p = new URLSearchParams({
+          aid:              '1988',
+          app_language:     navigator.language?.split('-')[0] || 'en',
+          app_name:         'tiktok_web',
+          browser_language: navigator.language || 'en-US',
+          browser_name:     'Mozilla',
+          browser_online:   'true',
+          browser_platform: navigator.platform || 'MacIntel',
+          browser_version:  '5.0',
+          channel:          'tiktok_web',
+          cookie_enabled:   'true',
+          device_platform:  'web_pc',
+          focus_state:      'true',
+          from_page:        'user',
+          history_len:      String(history.length),
+          is_fullscreen:    'false',
+          is_page_visible:  'true',
+          os:               /Mac/.test(navigator.platform) ? 'mac' : /Win/.test(navigator.platform) ? 'windows' : 'linux',
+          priority_region:  '',
+          referer:          '',
+          region:           'US',
+          screen_height:    String(screen.height),
+          screen_width:     String(screen.width),
+          tz_name:          Intl.DateTimeFormat().resolvedOptions().timeZone,
+          webcast_language: navigator.language?.split('-')[0] || 'en',
+          msToken:          cookies.msToken || '',
+          count:            String(limit ? Math.min(limit, 30) : 30),
+          cursor:           cursor,
+        });
+        // Add secUid for likes
+        if (type === 'likes') {
+          p.set('secUid', cookies.secUid || '');
+        }
+        return p;
+      }
+
       // Determine endpoint
       const endpoints = {
-        likes: '/api/favorite/item_list/',
-        bookmarks: '/api/user/collect/item_list/',
+        likes:     'https://www.tiktok.com/api/favorite/item_list/',
+        bookmarks: 'https://www.tiktok.com/api/user/collect/item_list/',
       };
       const endpoint = endpoints[type];
       if (!endpoint) return { error: `unknown type: ${type}` };
@@ -165,15 +232,12 @@ async function fetchVideoListInBrowser(tab, type, limit) {
       const videos = [];
       let cursor = '0';
       let hasMore = true;
-      const fetchCount = limit ? Math.min(limit, 30) : 30;
 
       while (hasMore) {
-        const url = `https://www.tiktok.com${endpoint}?count=${fetchCount}&cursor=${cursor}`;
+        const params = buildParams(cursor);
+        const url = `${endpoint}?${params}`;
         try {
-          const res = await fetch(url, { credentials: 'include' });
-          if (!res.ok) return { error: `HTTP ${res.status}`, videos };
-
-          const data = await res.json();
+          const data = await xhrGet(url);
           const sc = data.statusCode ?? data.status_code ?? -1;
           if (sc !== 0) return { error: `API error ${sc}: ${data.statusMsg || data.status_msg || ''}`, videos };
 
