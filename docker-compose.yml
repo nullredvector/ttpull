@@ -1,0 +1,11 @@
+services:
+  ttpull:
+    build: ./container
+    ports:
+      - "3847:3847"
+    volumes:
+      - ${ARCHIVE_DIR:-./archive}:/app/archive
+    environment:
+      - ARCHIVE_DIR=/app/archive
+      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 3 * * *}
+    restart: unless-stopped

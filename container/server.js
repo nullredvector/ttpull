@@ -1,0 +1,88 @@
+// ttpull container — Express API
+// Receives session from extension, exposes status, triggers download jobs
+
+import express from 'express';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { scheduleJobs, runNow } from './scheduler.js';
+import { getJobState } from './downloader.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SESSION_FILE = path.join(__dirname, 'session.json');
+
+const app = express();
+app.use(express.json({ limit: '1mb' }));
+
+// Allow extension (chrome-extension://*) and localhost origins
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
+  next();
+});
+
+// ── Session ───────────────────────────────────────────────────────────────────
+
+// Load persisted session on startup
+export let session = null;
+try {
+  const raw = await fs.readFile(SESSION_FILE, 'utf8');
+  session = JSON.parse(raw);
+  console.log(`[server] loaded session for @${session.ctx?.uniqueId || 'unknown'} (pushed ${new Date(session.pushedAt).toLocaleString()})`);
+} catch { /* no session yet */ }
+
+// POST /session — extension pushes cookies + page context here
+app.post('/session', async (req, res) => {
+  const { cookies, ctx, pushedAt } = req.body;
+
+  if (!Array.isArray(cookies) || !cookies.length) {
+    return res.status(400).json({ error: 'cookies required' });
+  }
+  if (!ctx?.uid && !ctx?.secUid) {
+    return res.status(400).json({ error: 'ctx.uid or ctx.secUid required' });
+  }
+
+  session = { cookies, ctx, pushedAt };
+
+  try {
+    await fs.writeFile(SESSION_FILE, JSON.stringify(session, null, 2));
+  } catch (e) {
+    console.error('[server] could not persist session:', e.message);
+  }
+
+  console.log(`[server] session updated for @${ctx.uniqueId || ctx.uid} at ${new Date(pushedAt).toLocaleString()}`);
+  res.json({ ok: true, user: ctx.uniqueId || ctx.uid });
+});
+
+// ── Status ────────────────────────────────────────────────────────────────────
+
+app.get('/status', (req, res) => {
+  const job = getJobState();
+  res.json({
+    hasSession: !!session,
+    sessionUser: session?.ctx?.uniqueId || null,
+    sessionAge: session ? Math.round((Date.now() - session.pushedAt) / 1000 / 60) + 'm ago' : null,
+    ...job,
+  });
+});
+
+// ── Manual trigger ────────────────────────────────────────────────────────────
+
+app.post('/run', async (req, res) => {
+  if (!session) return res.status(400).json({ error: 'no session — push from extension first' });
+  const job = getJobState();
+  if (job.running) return res.status(409).json({ error: 'job already running' });
+
+  runNow(session).catch(e => console.error('[run] error:', e));
+  res.json({ message: 'job started' });
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+
+const PORT = process.env.PORT || 3847;
+app.listen(PORT, () => {
+  console.log(`[server] listening on :${PORT}`);
+  scheduleJobs(() => session);
+});
