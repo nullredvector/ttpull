@@ -80,6 +80,42 @@ app.post('/run', async (req, res) => {
   res.json({ message: limit ? `test mode — pulling ${limit} items` : 'job started' });
 });
 
+// ── Logs (ring buffer) ───────────────────────────────────────────────────────
+
+const LOG_MAX = 200;
+const logBuffer = [];
+const origLog = console.log;
+const origErr = console.error;
+const origWarn = console.warn;
+
+function capture(level, args) {
+  const line = `[${new Date().toISOString()}] [${level}] ${args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}`;
+  logBuffer.push(line);
+  if (logBuffer.length > LOG_MAX) logBuffer.shift();
+}
+
+console.log  = (...args) => { capture('info', args);  origLog(...args); };
+console.error = (...args) => { capture('error', args); origErr(...args); };
+console.warn  = (...args) => { capture('warn', args);  origWarn(...args); };
+
+app.get('/logs', (req, res) => {
+  res.type('text/plain').send(logBuffer.join('\n'));
+});
+
+// ── Debug session ────────────────────────────────────────────────────────────
+
+app.get('/debug/session', (req, res) => {
+  if (!session) return res.json({ hasSession: false });
+  res.json({
+    hasSession: true,
+    uid: session.ctx?.uid || null,
+    secUid: session.ctx?.secUid ? `${session.ctx.secUid.slice(0, 20)}…` : null,
+    cookieCount: session.cookies?.length || 0,
+    cookieNames: session.cookies?.map(c => c.name) || [],
+    pushedAt: session.pushedAt,
+  });
+});
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3847;
