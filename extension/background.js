@@ -148,18 +148,67 @@ async function pushSession({ manual = false } = {}) {
 // This runs in the TikTok page context where anti-bot signatures are auto-applied.
 
 async function fetchVideoListInBrowser(tab, type, limit) {
+  // Strategy: intercept XHR/fetch responses by patching the page's network
+  // layer, then trigger a navigation to the likes/bookmarks tab so TikTok's
+  // own code makes the API call with all required anti-bot signatures.
+
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: 'MAIN',
     func: async (type, limit) => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-      // ── Resolve secUid ────────────────────────────────────────────────────
-      // Required for the likes API to know whose likes to return.
-      // Try multiple methods since page globals are no longer available.
-      let secUid = '';
+      // ── Intercept API responses ───────────────────────────────────────────
+      // Patch fetch to capture responses from the favorites/bookmarks endpoint
+      const captured = [];
+      const targetPaths = type === 'likes'
+        ? ['/api/favorite/item_list']
+        : ['/api/user/collect/item_list', '/api/item/bookmark/item_list', '/api/user/saves/item_list'];
 
-      // Method 1: look for secUid in any script tag content
+      const origFetch = window.fetch;
+      window.fetch = async function(...args) {
+        const response = await origFetch.apply(this, args);
+        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+        if (targetPaths.some(p => url.includes(p))) {
+          try {
+            const clone = response.clone();
+            const data = await clone.json();
+            captured.push(data);
+          } catch {}
+        }
+        return response;
+      };
+
+      // Also patch XHR
+      const origXHROpen = XMLHttpRequest.prototype.open;
+      const origXHRSend = XMLHttpRequest.prototype.send;
+      const xhrUrls = new WeakMap();
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        xhrUrls.set(this, url);
+        return origXHROpen.call(this, method, url, ...rest);
+      };
+      XMLHttpRequest.prototype.send = function(...args) {
+        const xhr = this;
+        const url = xhrUrls.get(this) || '';
+        if (targetPaths.some(p => url.includes(p))) {
+          const origHandler = xhr.onreadystatechange;
+          xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4 && xhr.status === 200) {
+              try { captured.push(JSON.parse(xhr.responseText)); } catch {}
+            }
+            if (origHandler) origHandler.apply(this, arguments);
+          };
+          xhr.addEventListener('load', () => {
+            if (xhr.status === 200) {
+              try { captured.push(JSON.parse(xhr.responseText)); } catch {}
+            }
+          });
+        }
+        return origXHRSend.apply(this, args);
+      };
+
+      // ── Resolve secUid and uniqueId for navigation ────────────────────────
+      let secUid = '', uniqueId = '';
       try {
         const scripts = document.querySelectorAll('script');
         for (const s of scripts) {
@@ -167,138 +216,122 @@ async function fetchVideoListInBrowser(tab, type, limit) {
           if (m) { secUid = m[1]; break; }
         }
       } catch {}
-
-      // Method 2: fetch /@me which redirects to /@username, then parse profile
       if (!secUid) {
         try {
-          const res = await fetch('https://www.tiktok.com/api/user/detail/', { credentials: 'include' });
+          const res = await origFetch('https://www.tiktok.com/api/user/detail/', { credentials: 'include' });
           const data = await res.json();
           secUid = data?.userInfo?.user?.secUid || '';
+          uniqueId = data?.userInfo?.user?.uniqueId || '';
         } catch {}
       }
-
-      // Method 3: try passport API
       if (!secUid) {
         try {
-          const res = await fetch('https://www.tiktok.com/passport/web/account/info/', { credentials: 'include' });
+          const res = await origFetch('https://www.tiktok.com/passport/web/account/info/', { credentials: 'include' });
           const data = await res.json();
           secUid = data?.data?.sec_uid || '';
+          uniqueId = data?.data?.username || '';
         } catch {}
       }
 
-      // ── Endpoint probing ──────────────────────────────────────────────────
-      const LIKES_ENDPOINTS = [
-        '/api/favorite/item_list/',
-        '/api/user/favorite/',
-      ];
-      const BOOKMARK_ENDPOINTS = [
-        '/api/user/collect/item_list/',
-        '/api/item/bookmark/item_list/',
-        '/api/user/saves/item_list/',
-      ];
-
-      const endpointList = type === 'likes' ? LIKES_ENDPOINTS : BOOKMARK_ENDPOINTS;
-
-      // Try each endpoint with secUid included
-      let workingEndpoint = null;
-      const allProbes = [];
-      for (const ep of endpointList) {
+      // ── Navigate to profile likes/bookmarks tab to trigger API call ───────
+      // We need to figure out the username for navigation
+      if (!uniqueId) {
         try {
-          const params = new URLSearchParams({ count: '2', cursor: '0' });
-          if (secUid) params.set('secUid', secUid);
-
-          const probeUrl = `https://www.tiktok.com${ep}?${params}`;
-          const res = await fetch(probeUrl, { credentials: 'include' });
-          const text = await res.text();
-          let data;
-          try { data = JSON.parse(text); } catch {
-            allProbes.push({ endpoint: ep, error: 'non-JSON', textLen: text.length, preview: text.slice(0, 200) });
-            continue;
+          // Try to get username from the profile link in the page
+          const profileLink = document.querySelector('a[href*="/@"]');
+          if (profileLink) {
+            const m = profileLink.href.match(/@([^/?]+)/);
+            if (m) uniqueId = m[1];
           }
+        } catch {}
+      }
+      if (!uniqueId) {
+        try {
+          // Try /@me redirect
+          const res = await origFetch('https://www.tiktok.com/@me', { credentials: 'include', redirect: 'follow' });
+          const m = res.url.match(/@([^/?]+)/);
+          if (m) uniqueId = m[1];
+        } catch {}
+      }
 
-          const sc = data.statusCode ?? data.status_code ?? -1;
-          const itemCount = (data.itemList || data.item_list || []).length;
-          allProbes.push({ endpoint: ep, status: res.status, statusCode: sc, keys: Object.keys(data), itemCount, raw: JSON.stringify(data).slice(0, 1000) });
+      // Navigate using SPA navigation by updating the URL
+      const tabPath = type === 'likes' ? 'liked' : 'saved';
+      const targetUrl = uniqueId
+        ? `https://www.tiktok.com/@${uniqueId}?tab=${tabPath}`
+        : null;
 
-          if (sc === 0 && itemCount > 0) {
-            workingEndpoint = ep;
-            break;
-          }
-          if (sc === 0 && !workingEndpoint) {
-            workingEndpoint = ep;
-          }
-        } catch (e) {
-          allProbes.push({ endpoint: ep, error: e.message });
+      if (targetUrl) {
+        // Use history.pushState + popstate to trigger SPA navigation
+        const currentUrl = location.href;
+        window.location.href = targetUrl;
+
+        // Wait for the API response to be captured
+        const maxWait = 15000;
+        const start = Date.now();
+        while (captured.length === 0 && Date.now() - start < maxWait) {
+          await sleep(500);
         }
+
+        // Navigate back to where we were
+        await sleep(1000);
+        window.location.href = currentUrl;
+      } else {
+        // Can't navigate — restore and return error
+        window.fetch = origFetch;
+        XMLHttpRequest.prototype.open = origXHROpen;
+        XMLHttpRequest.prototype.send = origXHRSend;
+        return { error: 'could not resolve username for navigation', secUid, videos: [] };
       }
 
-      if (!workingEndpoint) {
-        return { error: 'no working endpoint found', probes: allProbes, secUid, videos: [] };
-      }
+      // Wait a bit more for any additional captures
+      await sleep(2000);
 
-      // ── Paginate ──────────────────────────────────────────────────────────
+      // Restore original fetch/XHR
+      window.fetch = origFetch;
+      XMLHttpRequest.prototype.open = origXHROpen;
+      XMLHttpRequest.prototype.send = origXHRSend;
+
+      // ── Parse captured responses ──────────────────────────────────────────
       const videos = [];
-      let cursor = '0';
-      let hasMore = true;
+      for (const data of captured) {
+        const items = data.itemList || data.item_list || [];
+        for (const item of items) {
+          const vid = item.video || {};
+          let videoUrl = '';
 
-      while (hasMore) {
-        const params = new URLSearchParams({
-          count: String(limit ? Math.min(limit, 30) : 30),
-          cursor,
-        });
-        if (secUid) params.set('secUid', secUid);
-
-        const url = `https://www.tiktok.com${workingEndpoint}?${params}`;
-        try {
-          const res = await fetch(url, { credentials: 'include' });
-          const data = await res.json();
-          const sc = data.statusCode ?? data.status_code ?? -1;
-          if (sc !== 0) return { error: `API error ${sc}: ${data.statusMsg || data.status_msg || ''}`, secUid, videos };
-
-          const items = data.itemList || data.item_list || [];
-          if (items.length === 0) break;
-
-          for (const item of items) {
-            const vid = item.video || {};
-            let videoUrl = '';
-
-            // bitrateInfo: pick highest bitrate for best quality
-            if (vid.bitrateInfo && vid.bitrateInfo.length > 0) {
-              const best = vid.bitrateInfo.reduce((a, b) =>
-                (b.Bitrate || b.bitrate || 0) > (a.Bitrate || a.bitrate || 0) ? b : a
-              );
-              videoUrl = best.PlayAddr?.UrlList?.[0]
-                      || best.playAddr?.urlList?.[0]
-                      || best.PlayAddr || '';
-            }
-            if (!videoUrl) videoUrl = vid.downloadAddr || '';
-            if (!videoUrl) videoUrl = vid.playAddr || '';
-
-            videos.push({
-              id:         item.id,
-              desc:       item.desc || '',
-              authorId:   item.author?.id || '',
-              authorName: item.author?.uniqueId || '',
-              coverUrl:   vid.originCover || vid.cover || '',
-              videoUrl,
-              duration:   vid.duration || 0,
-              createTime: item.createTime || 0,
-            });
-            if (limit && videos.length >= limit) break;
+          if (vid.bitrateInfo && vid.bitrateInfo.length > 0) {
+            const best = vid.bitrateInfo.reduce((a, b) =>
+              (b.Bitrate || b.bitrate || 0) > (a.Bitrate || a.bitrate || 0) ? b : a
+            );
+            videoUrl = best.PlayAddr?.UrlList?.[0]
+                    || best.playAddr?.urlList?.[0]
+                    || best.PlayAddr || '';
           }
+          if (!videoUrl) videoUrl = vid.downloadAddr || '';
+          if (!videoUrl) videoUrl = vid.playAddr || '';
 
+          videos.push({
+            id:         item.id,
+            desc:       item.desc || '',
+            authorId:   item.author?.id || '',
+            authorName: item.author?.uniqueId || '',
+            coverUrl:   vid.originCover || vid.cover || '',
+            videoUrl,
+            duration:   vid.duration || 0,
+            createTime: item.createTime || 0,
+          });
           if (limit && videos.length >= limit) break;
-
-          hasMore = data.hasMore ?? false;
-          cursor = String(data.cursor || 0);
-
-          await sleep(800 + Math.random() * 400);
-        } catch (e) {
-          return { error: e.message, secUid, videos };
         }
+        if (limit && videos.length >= limit) break;
       }
 
-      return { videos, endpoint: workingEndpoint, secUid, probes: allProbes };
+      return {
+        videos,
+        secUid,
+        uniqueId,
+        capturedResponses: captured.length,
+        navigatedTo: targetUrl,
+      };
     },
     args: [type, limit],
   });
