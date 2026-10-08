@@ -206,43 +206,33 @@ async function fetchVideoListInBrowser(tab, type, limit) {
       // ── Resolve secUid and uniqueId ───────────────────────────────────────
       let secUid = '', uniqueId = '';
 
-      // Try inline script data
+      const bad = u => !u || /^(somevalue|undefined|null)$/i.test(u);
+
+      // 1. Sidebar profile link (logged-in user's own profile)
       try {
-        for (const s of document.querySelectorAll('script')) {
-          const m = s.textContent.match(/"secUid"\s*:\s*"([^"]+)"/);
-          if (m) { secUid = m[1]; break; }
-        }
-        const m2 = document.documentElement.innerHTML.match(/"uniqueId"\s*:\s*"([^"]+)"/);
-        if (m2) uniqueId = m2[1];
+        const link = document.querySelector('[data-e2e="nav-profile"], a[data-e2e="profile-icon"]');
+        const m = link?.getAttribute('href')?.match(/@([^/?&#]+)/);
+        if (m) uniqueId = decodeURIComponent(m[1]);
       } catch {}
 
-      // Try user detail API
-      if (!uniqueId) {
-        try {
-          const res = await origFetch('/api/user/detail/', { credentials: 'include' });
-          const data = await res.json();
-          secUid   = secUid   || data?.userInfo?.user?.secUid   || '';
-          uniqueId = uniqueId || data?.userInfo?.user?.uniqueId || '';
-        } catch {}
-      }
-
-      // Try passport API
-      if (!uniqueId) {
+      // 2. Passport account info
+      if (bad(uniqueId)) {
+        uniqueId = '';
         try {
           const res = await origFetch('/passport/web/account/info/', { credentials: 'include' });
           const data = await res.json();
           secUid   = secUid   || data?.data?.sec_uid  || '';
-          uniqueId = uniqueId || data?.data?.username || '';
+          uniqueId = data?.data?.username || '';
         } catch {}
       }
 
-      // Try profile link in DOM
-      if (!uniqueId) {
+      // 3. Own-profile link elsewhere in the DOM
+      if (bad(uniqueId)) {
+        uniqueId = '';
         try {
-          const link = document.querySelector('a[href*="/@"]');
-          if (link) {
-            const m = link.href.match(/@([^/?&#]+)/);
-            if (m) uniqueId = m[1];
+          for (const a of document.querySelectorAll('a[href*="/@"]')) {
+            const m = a.getAttribute('href').match(/^\/@([^/?&#]+)\/?$/);
+            if (m && !bad(m[1])) { uniqueId = decodeURIComponent(m[1]); break; }
           }
         } catch {}
       }
@@ -253,8 +243,8 @@ async function fetchVideoListInBrowser(tab, type, limit) {
       }
 
       const currentUrl = location.href;
-      const tabPath  = type === 'likes' ? 'liked' : 'saved';
-      const targetPath = `/@${uniqueId}/${tabPath}`;
+      const tabParam = type === 'likes' ? 'liked' : 'favorites';
+      const targetPath = `/@${uniqueId}?tab=${tabParam}`;
 
       // ── SPA navigation — keeps this script alive ──────────────────────────
       // Use the site's own client-side router so no full page reload occurs.
