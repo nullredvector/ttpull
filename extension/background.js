@@ -150,11 +150,11 @@ async function pushSession({ manual = false } = {}) {
 // This keeps the injected script alive so it can capture the API responses
 // that the site makes with its own anti-bot signatures.
 
-async function fetchVideoListInBrowser(tab, type, limit) {
+async function fetchVideoListInBrowser(tab, type, limit, knownId = '') {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: 'MAIN',
-    func: async (type, limit) => {
+    func: async (type, limit, knownId) => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
 
       // ── Intercept API responses ───────────────────────────────────────────
@@ -189,6 +189,7 @@ async function fetchVideoListInBrowser(tab, type, limit) {
       };
       XMLHttpRequest.prototype.send = function(...args) {
         const url = xhrUrls.get(this) || '';
+        try { const m = url.match(/\/(api|aweme)\/[^?]*/); if (m) seen.add('xhr:' + m[0]); } catch {}
         if (targetPaths.some(p => url.includes(p))) {
           this.addEventListener('load', () => {
             if (this.status === 200) {
@@ -206,12 +207,12 @@ async function fetchVideoListInBrowser(tab, type, limit) {
       };
 
       // ── Resolve secUid and uniqueId ───────────────────────────────────────
-      let secUid = '', uniqueId = '';
+      let secUid = '', uniqueId = knownId || '';
 
       const bad = u => !u || /^(somevalue|undefined|null)$/i.test(u);
 
       // 1. Sidebar profile link (logged-in user's own profile)
-      try {
+      if (!uniqueId) try {
         const link = document.querySelector('[data-e2e="nav-profile"], a[data-e2e="profile-icon"]');
         const m = link?.getAttribute('href')?.match(/@([^/?&#]+)/);
         if (m) uniqueId = decodeURIComponent(m[1]);
@@ -338,7 +339,10 @@ async function fetchVideoListInBrowser(tab, type, limit) {
         await sleep(500);
       }
       diag.finalUrl = location.href;
-      diag.seenApi = [...seen].slice(0, 25);
+      diag.seenApi = [...seen].slice(0, 80);
+      diag.tabs = [...document.querySelectorAll('[role="tab"], [data-e2e$="-tab"]')].slice(0, 12)
+        .map(e => `${e.tagName} e2e=${e.getAttribute('data-e2e')} sel=${e.getAttribute('aria-selected')} "${(e.textContent || '').trim().slice(0, 20)}"`);
+      diag.tabHtml = tabEl ? tabEl.outerHTML.slice(0, 300) : null;
 
       // ── Scroll to trigger pagination ──────────────────────────────────────
       const countItems = () => captured.reduce(
@@ -409,10 +413,28 @@ async function fetchVideoListInBrowser(tab, type, limit) {
         diag,
       };
     },
-    args: [type, limit],
+    args: [type, limit, knownId],
   });
 
   return result?.result || { error: 'script execution failed', videos: [] };
+}
+
+// Send the tab to a neutral page and wait for it, so every list starts from
+// the same place regardless of where the previous one ended up.
+async function resetTab(tab) {
+  await chrome.tabs.update(tab.id, { url: 'https://www.tiktok.com/foryou' });
+  await new Promise(resolve => {
+    const onUpdated = (id, info) => {
+      if (id === tab.id && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    setTimeout(() => { chrome.tabs.onUpdated.removeListener(onUpdated); resolve(); }, 20000);
+  });
+  await new Promise(r => setTimeout(r, 2500));
+  return chrome.tabs.get(tab.id);
 }
 
 // ── Run full sync (fetch lists in browser → send to container for download) ──
@@ -436,22 +458,7 @@ async function runFullSync({ testMode = false } = {}) {
     return;
   }
 
-  // A tab stranded on an error page has no profile data — reset it first.
-  if (/tiktok\.com\/(404|error)/.test(tab.url || '')) {
-    await chrome.tabs.update(tab.id, { url: 'https://www.tiktok.com/foryou' });
-    await new Promise(resolve => {
-      const onUpdated = (id, info) => {
-        if (id === tab.id && info.status === 'complete') {
-          chrome.tabs.onUpdated.removeListener(onUpdated);
-          resolve();
-        }
-      };
-      chrome.tabs.onUpdated.addListener(onUpdated);
-      setTimeout(() => { chrome.tabs.onUpdated.removeListener(onUpdated); resolve(); }, 20000);
-    });
-    await new Promise(r => setTimeout(r, 2000));
-    tab = await chrome.tabs.get(tab.id);
-  }
+  tab = await resetTab(tab);
 
   await saveSettings({ lastStatus: 'fetching liked videos…' });
 
@@ -465,7 +472,8 @@ async function runFullSync({ testMode = false } = {}) {
   await saveSettings({ lastStatus: `got ${likes.length} likes, fetching bookmarks…` });
 
   // Fetch bookmarks from browser
-  const bookmarksResult = await fetchVideoListInBrowser(tab, 'bookmarks', limit);
+  tab = await resetTab(tab);
+  const bookmarksResult = await fetchVideoListInBrowser(tab, 'bookmarks', limit, likesResult.uniqueId || '');
   if (bookmarksResult.error) {
     console.warn('[ttpull] bookmarks fetch error:', bookmarksResult.error);
   }
