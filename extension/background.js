@@ -145,299 +145,170 @@ async function pushSession({ manual = false } = {}) {
 }
 
 // ── Fetch video lists from browser ──────────────────────────────────────────
-// Patches the page's fetch/XHR, then uses SPA navigation (Next.js router or
-// history API) to navigate to the likes/saved tab WITHOUT a full page reload.
-// This keeps the injected script alive so it can capture the API responses
-// that the site makes with its own anti-bot signatures.
+// Runs in the page's own JS context and calls the page's (signing) window.fetch
+// with the same parameter set the site uses, then pages with cursor/hasMore.
+// No navigation or interception is needed: the page's fetch adds the
+// anti-bot signatures to any request it makes to its own API.
 
-async function fetchVideoListInBrowser(tab, type, limit, knownId = '') {
+async function fetchVideoListInBrowser(tab, type, limit) {
   const exec = chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: 'MAIN',
-    func: async (type, limit, knownId) => {
+    func: async (type, limit) => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const diag = { pages: [] };
 
-      // ── Intercept API responses ───────────────────────────────────────────
-      const captured = [];
-      const seen = new Set();
-      const targetPaths = type === 'likes'
-        ? ['/api/favorite/item_list']
-        : ['/api/user/collect/item_list', '/api/item/bookmark/item_list', '/api/user/saves/item_list'];
-
-      const origFetch = window.fetch;
-      window.fetch = async function(...args) {
-        const response = await origFetch.apply(this, args);
-        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
-        try { const m = url.match(/\/(api|aweme)\/[^?]*/); if (m) seen.add(m[0]); } catch {}
-        if (targetPaths.some(p => url.includes(p))) {
-          try {
-            const clone = response.clone();
-            const data = await clone.json();
-            captured.push(data);
-          } catch {}
-        }
-        return response;
-      };
-
-      // Patch XHR
-      const origXHROpen = XMLHttpRequest.prototype.open;
-      const origXHRSend = XMLHttpRequest.prototype.send;
-      const xhrUrls = new WeakMap();
-      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        xhrUrls.set(this, String(url));
-        return origXHROpen.call(this, method, url, ...rest);
-      };
-      XMLHttpRequest.prototype.send = function(...args) {
-        const url = xhrUrls.get(this) || '';
-        try { const m = url.match(/\/(api|aweme)\/[^?]*/); if (m) seen.add('xhr:' + m[0]); } catch {}
-        if (targetPaths.some(p => url.includes(p))) {
-          this.addEventListener('load', () => {
-            if (this.status === 200) {
-              try { captured.push(JSON.parse(this.responseText)); } catch {}
-            }
-          });
-        }
-        return origXHRSend.apply(this, args);
-      };
-
-      const restore = () => {
-        window.fetch = origFetch;
-        XMLHttpRequest.prototype.open = origXHROpen;
-        XMLHttpRequest.prototype.send = origXHRSend;
-      };
-
-      // ── Resolve secUid and uniqueId ───────────────────────────────────────
-      let secUid = '', uniqueId = knownId || '';
-
-      const bad = u => !u || /^(somevalue|undefined|null)$/i.test(u);
-
-      // A freshly loaded page renders its sidebar late — give it time.
-      if (!uniqueId) {
-        for (let i = 0; i < 40 && !document.querySelector('[data-e2e="nav-profile"], a[href^="/@"]'); i++) {
-          await sleep(300);
-        }
-      }
-
-      // 1. Sidebar profile link (logged-in user's own profile)
-      if (!uniqueId) try {
-        const link = document.querySelector('[data-e2e="nav-profile"], a[data-e2e="profile-icon"]');
-        const m = link?.getAttribute('href')?.match(/@([^/?&#]+)/);
-        if (m) uniqueId = decodeURIComponent(m[1]);
-      } catch {}
-
-      // 2. Passport account info
-      if (bad(uniqueId)) {
-        uniqueId = '';
-        try {
-          const res = await origFetch('/passport/web/account/info/', { credentials: 'include' });
-          const data = await res.json();
-          secUid   = secUid   || data?.data?.sec_uid  || '';
-          uniqueId = data?.data?.username || '';
-        } catch {}
-      }
-
-      // 3. Own-profile link elsewhere in the DOM
-      if (bad(uniqueId)) {
-        uniqueId = '';
-        try {
-          for (const a of document.querySelectorAll('a[href*="/@"]')) {
-            const m = a.getAttribute('href').match(/^\/@([^/?&#]+)\/?$/);
-            if (m && !bad(m[1])) { uniqueId = decodeURIComponent(m[1]); break; }
-          }
-        } catch {}
-      }
-
-      // 4. Embedded app state JSON (logged-in user lives under app-context)
-      if (bad(uniqueId)) {
-        uniqueId = '';
+      // ── App context (device id, region, user) ─────────────────────────────
+      const readCtx = async () => {
         try {
           const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
-          const st = el ? JSON.parse(el.textContent) : null;
-          const ctx = st?.__DEFAULT_SCOPE__?.['webapp.app-context'];
-          const u = ctx?.user || ctx?.currentUser || {};
-          uniqueId = u.uniqueId || '';
-          secUid   = secUid || u.secUid || '';
+          const c = el && JSON.parse(el.textContent)?.__DEFAULT_SCOPE__?.['webapp.app-context'];
+          if (c?.wid || c?.$wid) return { src: 'state', c };
         } catch {}
-      }
-
-      // 5. Any link whose text/aria says Profile
-      if (bad(uniqueId)) {
-        uniqueId = '';
         try {
-          for (const a of document.querySelectorAll('a[href^="/@"]')) {
-            const label = (a.getAttribute('aria-label') || a.textContent || '').toLowerCase();
-            const m = a.getAttribute('href').match(/^\/@([^/?&#]+)/);
-            if (m && label.includes('profile') && !bad(m[1])) { uniqueId = decodeURIComponent(m[1]); break; }
-          }
+          const r = await fetch('/node-webapp/api/app-context');
+          const c = await r.json();
+          if (c?.statusCode === 0 || c?.$wid || c?.wid) return { src: 'api', c };
         } catch {}
-      }
-
-      // 6. Look the username up from the secUid we already have
-      if (bad(uniqueId) && secUid) {
-        uniqueId = '';
-        try {
-          const res = await origFetch(`/api/user/detail/?secUid=${encodeURIComponent(secUid)}`, { credentials: 'include' });
-          const data = await res.json();
-          uniqueId = data?.userInfo?.user?.uniqueId || '';
-        } catch {}
-      }
-
-      if (!uniqueId) {
-        restore();
-        return {
-          error: 'could not resolve username', secUid, videos: [],
-          diag: {
-            url: location.href,
-            hasState: !!document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__'),
-            navProfile: document.querySelector('[data-e2e="nav-profile"]')?.outerHTML?.slice(0, 200) || null,
-            atLinks: [...document.querySelectorAll('a[href^="/@"]')].slice(0, 8)
-              .map(a => `${a.getAttribute('href')} | ${(a.getAttribute('aria-label') || a.textContent || '').trim().slice(0, 30)}`),
-          },
-        };
-      }
-
-      const currentUrl = location.href;
-      const tabParam = type === 'likes' ? 'liked' : 'favorites';
-      const targetPath = `/@${uniqueId}?tab=${tabParam}`;
-
-      // ── Client-side navigation by clicking real links ─────────────────────
-      // Clicking the site's own anchors/tabs lets its router handle the
-      // transition (no page reload, so this script survives) and makes the
-      // site issue its own signed list requests.
-      const startLen = history.length;
-      const diag = { clicked: [] };
-      const waitFor = async (fn, ms) => {
-        const t0 = Date.now();
-        while (Date.now() - t0 < ms) {
-          const v = fn();
-          if (v) return v;
-          await sleep(300);
-        }
         return null;
       };
-      const profileHref = `/@${uniqueId}`;
-      const onProfile = () => location.pathname.toLowerCase() === profileHref.toLowerCase();
+      const got = await readCtx();
+      if (!got) return { error: 'no app context', diag, videos: [] };
+      const c = got.c;
+      // Normalise both shapes ($wid style and plain style)
+      const ctx = {
+        wid:    c.$wid || c.wid,
+        region: c.$region || c.region,
+        os:     c.$os || c.os,
+        lang:   c.$language || c.language,
+        user:   c.$user || c.user || {},
+        mApi:   (c.$domains || c.domains || {}).mTApi,
+      };
+      diag.ctx = {
+        src: got.src, hasWid: !!ctx.wid, region: ctx.region, os: ctx.os, lang: ctx.lang,
+        userKeys: Object.keys(ctx.user), mApi: ctx.mApi || null,
+      };
+      if (!ctx.user.secUid) return { error: 'no secUid in app context', diag, videos: [] };
 
-      if (!onProfile()) {
-        const link = [...document.querySelectorAll('a[href^="/@"]')].find(a => {
-          const h = a.getAttribute('href').split('?')[0].replace(/\/$/, '');
-          return h.toLowerCase() === profileHref.toLowerCase();
-        });
-        if (link) {
-          link.click();
-          diag.clicked.push('profile-link');
-        } else {
-          history.pushState({}, '', profileHref);
-          window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
-          diag.clicked.push('profile-pushState');
+      // ── Build the same parameter set the site uses ────────────────────────
+      const base = (ctx.mApi && ctx.mApi.startsWith('https://')) ? ctx.mApi : 'https://m.tiktok.com';
+      const common = () => ({
+        aid: '1988', app_name: 'tiktok_web', channel: 'tiktok_web', device_platform: 'web_pc',
+        referer: document.referrer, cookie_enabled: navigator.cookieEnabled,
+        screen_width: screen.width, screen_height: screen.height,
+        browser_language: navigator.language, browser_platform: navigator.platform,
+        browser_name: navigator.appCodeName, browser_version: navigator.appVersion,
+        browser_online: navigator.onLine,
+        verifyFp: (document.cookie.match(/s_v_web_id=(\w+)/) || [])[1],
+        is_page_visible: true, focus_state: true,
+        is_fullscreen: window.matchMedia('(display-mode: fullscreen)').matches,
+        history_len: window.history.length, battery_info: 1,
+        tz_name: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        device_id: ctx.wid, region: ctx.region,
+        priority_region: ctx.user.region, os: ctx.os,
+        app_language: ctx.lang, webcast_language: ctx.lang,
+        from_page: 'user', secUid: ctx.user.secUid, language: ctx.lang,
+      });
+      const buildUrl = (path, extra) => {
+        const u = new URL(base + path);
+        for (const [k, v] of Object.entries({ ...common(), ...extra })) {
+          u.searchParams.set(k, v == null ? '' : String(v));
         }
-        await waitFor(onProfile, 5000);
-        await sleep(1500);
-      }
+        return u.toString();
+      };
 
-      const tabKey = type === 'likes' ? 'liked' : 'favorites';
-      const tabRe  = type === 'likes' ? /^liked$/i : /^(favorites|saved|collections?)$/i;
-      const tabEl = await waitFor(() =>
-        document.querySelector(`[data-e2e="${tabKey}-tab"]`)
-        || [...document.querySelectorAll('[role="tab"], p, span, div')]
-             .find(e => e.children.length === 0 && tabRe.test((e.textContent || '').trim())),
-        10000
-      );
-      if (tabEl) {
-        (tabEl.closest('[role="tab"], a, button') || tabEl).click();
-        diag.clicked.push(`${tabKey}-tab`);
-      } else {
-        diag.clicked.push(`${tabKey}-tab-not-found`);
-      }
+      // ── Endpoints to try, in order ────────────────────────────────────────
+      const variants = type === 'likes'
+        ? [{ name: 'favorite', path: '/api/favorite/item_list/', extra: {} }]
+        : [
+            { name: 'collect', path: '/api/user/collect/item_list/', extra: { sourceType: 113 } },
+            { name: 'collect-plain', path: '/api/user/collect/item_list/', extra: {} },
+          ];
 
-      // ── Wait for API calls ────────────────────────────────────────────────
-      const start = Date.now();
-      while (captured.length === 0 && Date.now() - start < 15000) {
-        await sleep(500);
-      }
-      diag.finalUrl = location.href;
-      diag.seenApi = [...seen].slice(0, 80);
-      diag.tabs = [...document.querySelectorAll('[role="tab"], [data-e2e$="-tab"]')].slice(0, 12)
-        .map(e => `${e.tagName} e2e=${e.getAttribute('data-e2e')} sel=${e.getAttribute('aria-selected')} "${(e.textContent || '').trim().slice(0, 20)}"`);
-      diag.tabHtml = tabEl ? tabEl.outerHTML.slice(0, 300) : null;
+      const pageFetch = async (v, cursor) => {
+        const r = await window.fetch(buildUrl(v.path, { ...v.extra, cursor, count: 30 }), { credentials: 'include' });
+        const text = await r.text();
+        let j = null;
+        try { j = JSON.parse(text); } catch {}
+        return { http: r.status, j, len: text.length };
+      };
 
-      // ── Scroll to trigger pagination ──────────────────────────────────────
-      const countItems = () => captured.reduce(
-        (n, d) => n + (d.itemList?.length || d.item_list?.length || 0), 0
-      );
-      const maxScrolls = limit > 0 ? 3 : 12;
-      for (let i = 0; i < maxScrolls; i++) {
-        if (limit > 0 && countItems() >= limit) break;
-        window.scrollBy({ top: 3000, behavior: 'smooth' });
-        await sleep(2500);
-      }
-      await sleep(1000);
-
-      // ── Navigate back ─────────────────────────────────────────────────────
-      try {
-        const delta = history.length - startLen;
-        if (location.href !== currentUrl) {
-          if (delta > 0) history.go(-delta);
-          else {
-            history.pushState({}, '', currentUrl);
-            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
-          }
-        }
-      } catch {}
-
-      restore();
-
-      // ── Parse captured responses ──────────────────────────────────────────
-      const videos = [];
-      for (const data of captured) {
-        const items = data.itemList || data.item_list || [];
-        for (const item of items) {
-          const vid = item.video || {};
-          let videoUrl = '';
-
-          if (vid.bitrateInfo?.length > 0) {
-            const best = vid.bitrateInfo.reduce((a, b) =>
-              (b.Bitrate || b.bitrate || 0) > (a.Bitrate || a.bitrate || 0) ? b : a
-            );
-            videoUrl = best.PlayAddr?.UrlList?.[0]
-                    || best.playAddr?.urlList?.[0]
-                    || best.PlayAddr || '';
-          }
-          if (!videoUrl) videoUrl = vid.downloadAddr || '';
-          if (!videoUrl) videoUrl = vid.playAddr || '';
-
-          videos.push({
-            id:         item.id,
-            desc:       item.desc || '',
-            authorId:   item.author?.id || '',
-            authorName: item.author?.uniqueId || '',
-            coverUrl:   vid.originCover || vid.cover || '',
-            videoUrl,
-            duration:   vid.duration || 0,
-            createTime: item.createTime || 0,
+      const items = [];
+      let usedVariant = null;
+      for (const v of variants) {
+        let cursor = '0', hasMore = true, firstPage = true, seenCursors = new Set(), bad = 0;
+        const got = [];
+        while (hasMore && (limit === 0 || got.length < limit)) {
+          await sleep(1200);
+          let res;
+          try { res = await pageFetch(v, cursor); } catch (e) { diag.pages.push({ v: v.name, err: String(e) }); break; }
+          const j = res.j;
+          diag.pages.push({
+            v: v.name, cursor, http: res.http, len: res.len,
+            status: j?.statusCode ?? j?.status_code ?? null, msg: j?.status_msg || j?.message || null,
+            n: (j?.itemList || j?.item_list || []).length, hasMore: j?.hasMore ?? null,
           });
-          if (limit > 0 && videos.length >= limit) break;
+          if (!j || (j.statusCode ?? j.status_code ?? 0) !== 0) {
+            if (++bad > 2) break;
+            continue;
+          }
+          bad = 0;
+          const list = j.itemList || j.item_list || [];
+          got.push(...list);
+          hasMore = !!j.hasMore;
+          const next = String(j.cursor ?? '');
+          if (!next || next === '0' || next === '-1' || seenCursors.has(next)) break;
+          seenCursors.add(next);
+          cursor = next;
+          firstPage = false;
+          if (diag.pages.length > 400) break;
         }
+        if (got.length) { items.push(...got); usedVariant = v.name; break; }
+      }
+      diag.usedVariant = usedVariant;
+
+      // ── Parse (best quality available) ────────────────────────────────────
+      const videos = [];
+      const seenIds = new Set();
+      for (const item of items) {
+        if (!item?.id || seenIds.has(item.id)) continue;
+        seenIds.add(item.id);
+        const vid = item.video || {};
+        let videoUrl = '';
+        if (vid.bitrateInfo?.length > 0) {
+          const best = vid.bitrateInfo.reduce((a, b) =>
+            (b.Bitrate || b.bitrate || 0) > (a.Bitrate || a.bitrate || 0) ? b : a
+          );
+          videoUrl = best.PlayAddr?.UrlList?.[0]
+                  || best.playAddr?.urlList?.[0]
+                  || best.PlayAddr || '';
+        }
+        if (!videoUrl) videoUrl = vid.downloadAddr || '';
+        if (!videoUrl) videoUrl = vid.playAddr || '';
+        videos.push({
+          id:         item.id,
+          desc:       item.desc || '',
+          authorId:   item.author?.id || '',
+          authorName: item.author?.uniqueId || '',
+          coverUrl:   vid.originCover || vid.cover || '',
+          videoUrl,
+          duration:   vid.duration || 0,
+          createTime: item.createTime || 0,
+        });
         if (limit > 0 && videos.length >= limit) break;
       }
 
-      return {
-        videos,
-        secUid,
-        uniqueId,
-        capturedResponses: captured.length,
-        navigatedTo: targetPath,
-        diag,
-      };
+      return { videos, uniqueId: ctx.user.uniqueId || '', secUid: ctx.user.secUid, diag };
     },
-    args: [type, limit, knownId],
+    args: [type, limit],
   });
 
+  const timeoutMs = limit > 0 ? 120000 : 30 * 60 * 1000;
   let result;
   try {
     [result] = await Promise.race([
       exec,
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timed out after 120s')), 120000)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`timed out after ${timeoutMs / 1000}s`)), timeoutMs)),
     ]);
   } catch (err) {
     return { error: `script failed: ${err.message}`, videos: [] };
@@ -462,6 +333,11 @@ async function resetTab(tab) {
   });
   await new Promise(r => setTimeout(r, 2500));
   return chrome.tabs.get(tab.id);
+}
+
+function trimDiag(d) {
+  if (!d?.pages) return d;
+  return { ...d, pages: d.pages.length > 12 ? [...d.pages.slice(0, 6), ...d.pages.slice(-6)] : d.pages, pageCount: d.pages.length };
 }
 
 // ── Run full sync (fetch lists in browser → send to container for download) ──
@@ -498,8 +374,7 @@ async function runFullSyncInner({ testMode = false } = {}) {
     return;
   }
 
-  await saveSettings({ lastStatus: 'resetting tab…' });
-  tab = await resetTab(tab);
+  if (/tiktok\.com\/(404|error)/.test(tab.url || '')) tab = await resetTab(tab);
 
   await saveSettings({ lastStatus: 'fetching liked videos…' });
 
@@ -513,10 +388,8 @@ async function runFullSyncInner({ testMode = false } = {}) {
   await saveSettings({ lastStatus: `got ${likes.length} likes, fetching bookmarks…` });
 
   // Fetch bookmarks from browser
-  await saveSettings({ lastStatus: `got ${likes.length} likes, resetting tab…` });
-  tab = await resetTab(tab);
   await saveSettings({ lastStatus: 'fetching bookmarks…' });
-  const bookmarksResult = await fetchVideoListInBrowser(tab, 'bookmarks', limit, likesResult.uniqueId || '');
+  const bookmarksResult = await fetchVideoListInBrowser(tab, 'bookmarks', limit);
   if (bookmarksResult.error) {
     console.warn('[ttpull] bookmarks fetch error:', bookmarksResult.error);
   }
@@ -528,8 +401,8 @@ async function runFullSyncInner({ testMode = false } = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        likes:     { count: likes.length,     error: likesResult.error,     diag: likesResult.diag,     secUid: likesResult.secUid,     uniqueId: likesResult.uniqueId,     capturedResponses: likesResult.capturedResponses,     diag: likesResult.diag,     navigatedTo: likesResult.navigatedTo },
-        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, diag: bookmarksResult.diag, secUid: bookmarksResult.secUid, uniqueId: bookmarksResult.uniqueId, capturedResponses: bookmarksResult.capturedResponses, diag: bookmarksResult.diag, navigatedTo: bookmarksResult.navigatedTo },
+        likes:     { count: likes.length,     error: likesResult.error,     uniqueId: likesResult.uniqueId,     diag: trimDiag(likesResult.diag) },
+        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, uniqueId: bookmarksResult.uniqueId, diag: trimDiag(bookmarksResult.diag) },
       }),
     });
   } catch {}
