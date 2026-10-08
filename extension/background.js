@@ -226,7 +226,7 @@ async function fetchVideoListInBrowser(tab, type, limit) {
           ];
 
       const pageFetch = async (v, cursor) => {
-        const r = await window.fetch(buildUrl(v.path, { ...v.extra, cursor, count: 30 }), { credentials: 'include' });
+        const r = await window.fetch(buildUrl(v.path, { ...v.extra, cursor, count: 30 }), { credentials: 'include', cache: 'no-store' });
         const text = await r.text();
         let j = null;
         try { j = JSON.parse(text); } catch {}
@@ -254,6 +254,7 @@ async function fetchVideoListInBrowser(tab, type, limit) {
           }
           bad = 0;
           const list = j.itemList || j.item_list || [];
+          if (!diag.firstItems) diag.firstItems = list.slice(0, 5).map(i => `${i.id} ${new Date((i.createTime || 0) * 1000).toISOString().slice(0, 10)} @${i.author?.uniqueId || ''}`);
           got.push(...list);
           hasMore = !!j.hasMore;
           const next = String(j.cursor ?? '');
