@@ -10,3 +10,10 @@ services:
       - ARCHIVE_DIR=/app/archive
       - CRON_SCHEDULE=${CRON_SCHEDULE:-0 3 * * *}
     restart: unless-stopped
+
+  watchtower:
+    image: containrrr/watchtower
+    command: --interval 300 --cleanup ttpull
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
