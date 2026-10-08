@@ -211,6 +211,13 @@ async function fetchVideoListInBrowser(tab, type, limit, knownId = '') {
 
       const bad = u => !u || /^(somevalue|undefined|null)$/i.test(u);
 
+      // A freshly loaded page renders its sidebar late — give it time.
+      if (!uniqueId) {
+        for (let i = 0; i < 40 && !document.querySelector('[data-e2e="nav-profile"], a[href^="/@"]'); i++) {
+          await sleep(300);
+        }
+      }
+
       // 1. Sidebar profile link (logged-in user's own profile)
       if (!uniqueId) try {
         const link = document.querySelector('[data-e2e="nav-profile"], a[data-e2e="profile-icon"]');
@@ -262,6 +269,16 @@ async function fetchVideoListInBrowser(tab, type, limit, knownId = '') {
             const m = a.getAttribute('href').match(/^\/@([^/?&#]+)/);
             if (m && label.includes('profile') && !bad(m[1])) { uniqueId = decodeURIComponent(m[1]); break; }
           }
+        } catch {}
+      }
+
+      // 6. Look the username up from the secUid we already have
+      if (bad(uniqueId) && secUid) {
+        uniqueId = '';
+        try {
+          const res = await origFetch(`/api/user/detail/?secUid=${encodeURIComponent(secUid)}`, { credentials: 'include' });
+          const data = await res.json();
+          uniqueId = data?.userInfo?.user?.uniqueId || '';
         } catch {}
       }
 
