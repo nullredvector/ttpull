@@ -403,10 +403,27 @@ async function runFullSync({ testMode = false } = {}) {
   // Ensure session is pushed first
   await pushSession({ manual: true });
 
-  const tab = await findTikTokTab();
+  let tab = await findTikTokTab();
   if (!tab) {
     await saveSettings({ lastStatus: 'no open tab — open the site first' });
     return;
+  }
+
+  // A tab stranded on an error page has no profile data — reset it first.
+  if (/tiktok\.com\/(404|error)/.test(tab.url || '')) {
+    await chrome.tabs.update(tab.id, { url: 'https://www.tiktok.com/foryou' });
+    await new Promise(resolve => {
+      const onUpdated = (id, info) => {
+        if (id === tab.id && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(onUpdated);
+          resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(onUpdated);
+      setTimeout(() => { chrome.tabs.onUpdated.removeListener(onUpdated); resolve(); }, 20000);
+    });
+    await new Promise(r => setTimeout(r, 2000));
+    tab = await chrome.tabs.get(tab.id);
   }
 
   await saveSettings({ lastStatus: 'fetching liked videos…' });
