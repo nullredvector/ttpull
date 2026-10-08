@@ -522,6 +522,9 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
           const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(() => false);
           if (ok) jobState.counts.likes++; else jobState.counts.skipped++;
           await sleep(300 + Math.random() * 200);
+        } else if (videoExists) {
+          jobState.counts.existing = (jobState.counts.existing || 0) + 1;
+          console.log(`[dl:likes] ${i + 1}/${likes.length} already have ${v.id}`);
         }
 
         if (!coverExists && v.coverUrl) {
@@ -563,6 +566,9 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
           const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(() => false);
           if (ok) jobState.counts.bookmarks++; else jobState.counts.skipped++;
           await sleep(300 + Math.random() * 200);
+        } else if (videoExists) {
+          jobState.counts.existing = (jobState.counts.existing || 0) + 1;
+          console.log(`[dl:bookmarks] ${i + 1}/${bookmarks.length} already have ${v.id}`);
         }
 
         if (!coverExists && v.coverUrl) {
@@ -578,7 +584,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
     }
 
     jobState.lastRun = new Date().toISOString();
-    console.log(`[dl] done — likes: ${jobState.counts.likes}, bookmarks: ${jobState.counts.bookmarks}, skipped: ${jobState.counts.skipped}`);
+    console.log(`[dl] done — new likes: ${jobState.counts.likes}, new bookmarks: ${jobState.counts.bookmarks}, already had: ${jobState.counts.existing || 0}, failed: ${jobState.counts.skipped}`);
   } catch (e) {
     jobState.lastError = e.message;
     console.error('[dl] error:', e);
