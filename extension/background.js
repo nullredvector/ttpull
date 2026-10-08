@@ -237,9 +237,43 @@ async function fetchVideoListInBrowser(tab, type, limit) {
         } catch {}
       }
 
+      // 4. Embedded app state JSON (logged-in user lives under app-context)
+      if (bad(uniqueId)) {
+        uniqueId = '';
+        try {
+          const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
+          const st = el ? JSON.parse(el.textContent) : null;
+          const ctx = st?.__DEFAULT_SCOPE__?.['webapp.app-context'];
+          const u = ctx?.user || ctx?.currentUser || {};
+          uniqueId = u.uniqueId || '';
+          secUid   = secUid || u.secUid || '';
+        } catch {}
+      }
+
+      // 5. Any link whose text/aria says Profile
+      if (bad(uniqueId)) {
+        uniqueId = '';
+        try {
+          for (const a of document.querySelectorAll('a[href^="/@"]')) {
+            const label = (a.getAttribute('aria-label') || a.textContent || '').toLowerCase();
+            const m = a.getAttribute('href').match(/^\/@([^/?&#]+)/);
+            if (m && label.includes('profile') && !bad(m[1])) { uniqueId = decodeURIComponent(m[1]); break; }
+          }
+        } catch {}
+      }
+
       if (!uniqueId) {
         restore();
-        return { error: 'could not resolve username', secUid, videos: [] };
+        return {
+          error: 'could not resolve username', secUid, videos: [],
+          diag: {
+            url: location.href,
+            hasState: !!document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__'),
+            navProfile: document.querySelector('[data-e2e="nav-profile"]')?.outerHTML?.slice(0, 200) || null,
+            atLinks: [...document.querySelectorAll('a[href^="/@"]')].slice(0, 8)
+              .map(a => `${a.getAttribute('href')} | ${(a.getAttribute('aria-label') || a.textContent || '').trim().slice(0, 30)}`),
+          },
+        };
       }
 
       const currentUrl = location.href;
@@ -399,8 +433,8 @@ async function runFullSync({ testMode = false } = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        likes:     { count: likes.length,     error: likesResult.error,     secUid: likesResult.secUid,     uniqueId: likesResult.uniqueId,     capturedResponses: likesResult.capturedResponses,     navigatedTo: likesResult.navigatedTo },
-        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, secUid: bookmarksResult.secUid, uniqueId: bookmarksResult.uniqueId, capturedResponses: bookmarksResult.capturedResponses, navigatedTo: bookmarksResult.navigatedTo },
+        likes:     { count: likes.length,     error: likesResult.error,     diag: likesResult.diag,     secUid: likesResult.secUid,     uniqueId: likesResult.uniqueId,     capturedResponses: likesResult.capturedResponses,     navigatedTo: likesResult.navigatedTo },
+        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, diag: bookmarksResult.diag, secUid: bookmarksResult.secUid, uniqueId: bookmarksResult.uniqueId, capturedResponses: bookmarksResult.capturedResponses, navigatedTo: bookmarksResult.navigatedTo },
       }),
     });
   } catch {}
