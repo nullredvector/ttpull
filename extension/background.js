@@ -159,6 +159,7 @@ async function fetchVideoListInBrowser(tab, type, limit) {
 
       // ── Intercept API responses ───────────────────────────────────────────
       const captured = [];
+      const seen = new Set();
       const targetPaths = type === 'likes'
         ? ['/api/favorite/item_list']
         : ['/api/user/collect/item_list', '/api/item/bookmark/item_list', '/api/user/saves/item_list'];
@@ -167,6 +168,7 @@ async function fetchVideoListInBrowser(tab, type, limit) {
       window.fetch = async function(...args) {
         const response = await origFetch.apply(this, args);
         const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+        try { const m = url.match(/\/(api|aweme)\/[^?]*/); if (m) seen.add(m[0]); } catch {}
         if (targetPaths.some(p => url.includes(p))) {
           try {
             const clone = response.clone();
@@ -280,33 +282,54 @@ async function fetchVideoListInBrowser(tab, type, limit) {
       const tabParam = type === 'likes' ? 'liked' : 'favorites';
       const targetPath = `/@${uniqueId}?tab=${tabParam}`;
 
-      // ── SPA navigation — keeps this script alive ──────────────────────────
-      // Use the site's own client-side router so no full page reload occurs.
-      // Full page reloads destroy the patched fetch/XHR and this execution context.
-      let navigated = false;
-
-      // Method 1: Next.js router (most reliable for Next.js apps)
-      try {
-        const router = window.next?.router;
-        if (router?.push) {
-          router.push(targetPath);
-          navigated = true;
+      // ── Client-side navigation by clicking real links ─────────────────────
+      // Clicking the site's own anchors/tabs lets its router handle the
+      // transition (no page reload, so this script survives) and makes the
+      // site issue its own signed list requests.
+      const startLen = history.length;
+      const diag = { clicked: [] };
+      const waitFor = async (fn, ms) => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < ms) {
+          const v = fn();
+          if (v) return v;
+          await sleep(300);
         }
-      } catch {}
+        return null;
+      };
+      const profileHref = `/@${uniqueId}`;
+      const onProfile = () => location.pathname.toLowerCase() === profileHref.toLowerCase();
 
-      // Method 2: history.pushState + synthetic popstate
-      // React Router and Next.js both listen to popstate for SPA navigation.
-      if (!navigated) {
-        try {
-          history.pushState({}, '', targetPath);
+      if (!onProfile()) {
+        const link = [...document.querySelectorAll('a[href^="/@"]')].find(a => {
+          const h = a.getAttribute('href').split('?')[0].replace(/\/$/, '');
+          return h.toLowerCase() === profileHref.toLowerCase();
+        });
+        if (link) {
+          link.click();
+          diag.clicked.push('profile-link');
+        } else {
+          history.pushState({}, '', profileHref);
           window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
-          navigated = true;
-        } catch {}
+          diag.clicked.push('profile-pushState');
+        }
+        await waitFor(onProfile, 5000);
+        await sleep(1500);
       }
 
-      if (!navigated) {
-        restore();
-        return { error: 'could not trigger SPA navigation', secUid, videos: [] };
+      const tabKey = type === 'likes' ? 'liked' : 'favorites';
+      const tabRe  = type === 'likes' ? /^liked$/i : /^(favorites|saved|collections?)$/i;
+      const tabEl = await waitFor(() =>
+        document.querySelector(`[data-e2e="${tabKey}-tab"]`)
+        || [...document.querySelectorAll('[role="tab"], p, span, div')]
+             .find(e => e.children.length === 0 && tabRe.test((e.textContent || '').trim())),
+        10000
+      );
+      if (tabEl) {
+        (tabEl.closest('[role="tab"], a, button') || tabEl).click();
+        diag.clicked.push(`${tabKey}-tab`);
+      } else {
+        diag.clicked.push(`${tabKey}-tab-not-found`);
       }
 
       // ── Wait for API calls ────────────────────────────────────────────────
@@ -314,6 +337,8 @@ async function fetchVideoListInBrowser(tab, type, limit) {
       while (captured.length === 0 && Date.now() - start < 15000) {
         await sleep(500);
       }
+      diag.finalUrl = location.href;
+      diag.seenApi = [...seen].slice(0, 25);
 
       // ── Scroll to trigger pagination ──────────────────────────────────────
       const countItems = () => captured.reduce(
@@ -329,12 +354,13 @@ async function fetchVideoListInBrowser(tab, type, limit) {
 
       // ── Navigate back ─────────────────────────────────────────────────────
       try {
-        const router = window.next?.router;
-        if (router?.push) {
-          router.push(currentUrl);
-        } else {
-          history.pushState({}, '', currentUrl);
-          window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+        const delta = history.length - startLen;
+        if (location.href !== currentUrl) {
+          if (delta > 0) history.go(-delta);
+          else {
+            history.pushState({}, '', currentUrl);
+            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+          }
         }
       } catch {}
 
@@ -380,6 +406,7 @@ async function fetchVideoListInBrowser(tab, type, limit) {
         uniqueId,
         capturedResponses: captured.length,
         navigatedTo: targetPath,
+        diag,
       };
     },
     args: [type, limit],
@@ -450,8 +477,8 @@ async function runFullSync({ testMode = false } = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        likes:     { count: likes.length,     error: likesResult.error,     diag: likesResult.diag,     secUid: likesResult.secUid,     uniqueId: likesResult.uniqueId,     capturedResponses: likesResult.capturedResponses,     navigatedTo: likesResult.navigatedTo },
-        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, diag: bookmarksResult.diag, secUid: bookmarksResult.secUid, uniqueId: bookmarksResult.uniqueId, capturedResponses: bookmarksResult.capturedResponses, navigatedTo: bookmarksResult.navigatedTo },
+        likes:     { count: likes.length,     error: likesResult.error,     diag: likesResult.diag,     secUid: likesResult.secUid,     uniqueId: likesResult.uniqueId,     capturedResponses: likesResult.capturedResponses,     diag: likesResult.diag,     navigatedTo: likesResult.navigatedTo },
+        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, diag: bookmarksResult.diag, secUid: bookmarksResult.secUid, uniqueId: bookmarksResult.uniqueId, capturedResponses: bookmarksResult.capturedResponses, diag: bookmarksResult.diag, navigatedTo: bookmarksResult.navigatedTo },
       }),
     });
   } catch {}
