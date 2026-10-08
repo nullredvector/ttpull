@@ -359,7 +359,17 @@ async function downloadFile(url, destPath, headers) {
     return false;
   }
 
-  await fs.writeFile(destPath, buf);
+  // Reject anything that isn't plausibly a video (error pages, truncated bodies)
+  const head = buf.subarray(4, 8).toString('latin1');
+  if (buf.length < 10 * 1024 || head !== 'ftyp') {
+    console.log(`[skip] ${path.basename(destPath)} is not a valid mp4 (${buf.length} bytes, header "${buf.subarray(0, 12).toString('latin1').replace(/[^\x20-\x7e]/g, '.')}")`);
+    return false;
+  }
+
+  const tmp = `${destPath}.part`;
+  await fs.writeFile(tmp, buf);
+  await fs.rename(tmp, destPath);
+  console.log(`[dl] saved ${path.basename(destPath)} (${(buf.length / 1e6).toFixed(1)}MB)`);
   return true;
 }
 
@@ -447,7 +457,7 @@ export async function runJob(session, opts = {}) {
         const coverPath = path.join(bmCovers, `${v.id}.jpg`);
 
         const [videoExists, coverExists] = await Promise.all([
-          fs.access(videoPath).then(() => true).catch(() => false),
+          fs.stat(videoPath).then(st => st.size > 10 * 1024).catch(() => false),
           fs.access(coverPath).then(() => true).catch(() => false),
         ]);
 
@@ -513,7 +523,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
         const coverPath = path.join(coversDir, `${v.id}.jpg`);
 
         const [videoExists, coverExists] = await Promise.all([
-          fs.access(videoPath).then(() => true).catch(() => false),
+          fs.stat(videoPath).then(st => st.size > 10 * 1024).catch(() => false),
           fs.access(coverPath).then(() => true).catch(() => false),
         ]);
 
@@ -557,7 +567,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
         const coverPath = path.join(bmCovers, `${v.id}.jpg`);
 
         const [videoExists, coverExists] = await Promise.all([
-          fs.access(videoPath).then(() => true).catch(() => false),
+          fs.stat(videoPath).then(st => st.size > 10 * 1024).catch(() => false),
           fs.access(coverPath).then(() => true).catch(() => false),
         ]);
 

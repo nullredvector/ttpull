@@ -135,6 +135,26 @@ app.post('/debug/fetch-result', (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/debug/files', async (req, res) => {
+  const base = path.join(process.env.ARCHIVE_DIR || './archive', 'data');
+  const out = [];
+  const walk = async dir => {
+    let ents = [];
+    try { ents = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (/\.(mp4|part)$/.test(e.name)) {
+        const st = await fs.stat(full);
+        out.push({ file: path.relative(base, full), bytes: st.size, mtime: st.mtime.toISOString() });
+      }
+    }
+  };
+  await walk(base);
+  out.sort((a, b) => b.mtime.localeCompare(a.mtime));
+  res.json(out.slice(0, 30));
+});
+
 app.get('/debug/fetch-result', (req, res) => {
   res.json(lastFetchResult || { none: true });
 });
