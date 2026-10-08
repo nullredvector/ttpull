@@ -1,5 +1,5 @@
 // ttpull background service worker
-// Wakes on alarm, collects TikTok session via content script, pushes to container.
+// Wakes on alarm, collects session via content script, pushes to container.
 // Also fetches liked/bookmarked video lists from the browser (where anti-bot
 // signatures are auto-applied) and sends metadata to the container for download.
 
@@ -43,7 +43,7 @@ chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === ALARM_NAME) runFullSync();
 });
 
-// ── Find a TikTok tab ────────────────────────────────────────────────────────
+// ── Find a tab ────────────────────────────────────────────────────────────────
 
 async function findTikTokTab() {
   const tabs = await chrome.tabs.query({ url: 'https://www.tiktok.com/*' });
@@ -145,13 +145,12 @@ async function pushSession({ manual = false } = {}) {
 }
 
 // ── Fetch video lists from browser ──────────────────────────────────────────
-// This runs in the TikTok page context where anti-bot signatures are auto-applied.
+// Patches the page's fetch/XHR, then uses SPA navigation (Next.js router or
+// history API) to navigate to the likes/saved tab WITHOUT a full page reload.
+// This keeps the injected script alive so it can capture the API responses
+// that the site makes with its own anti-bot signatures.
 
 async function fetchVideoListInBrowser(tab, type, limit) {
-  // Strategy: intercept XHR/fetch responses by patching the page's network
-  // layer, then trigger a navigation to the likes/bookmarks tab so TikTok's
-  // own code makes the API call with all required anti-bot signatures.
-
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: 'MAIN',
@@ -159,7 +158,6 @@ async function fetchVideoListInBrowser(tab, type, limit) {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
 
       // ── Intercept API responses ───────────────────────────────────────────
-      // Patch fetch to capture responses from the favorites/bookmarks endpoint
       const captured = [];
       const targetPaths = type === 'likes'
         ? ['/api/favorite/item_list']
@@ -179,117 +177,144 @@ async function fetchVideoListInBrowser(tab, type, limit) {
         return response;
       };
 
-      // Also patch XHR
+      // Patch XHR
       const origXHROpen = XMLHttpRequest.prototype.open;
       const origXHRSend = XMLHttpRequest.prototype.send;
       const xhrUrls = new WeakMap();
       XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        xhrUrls.set(this, url);
+        xhrUrls.set(this, String(url));
         return origXHROpen.call(this, method, url, ...rest);
       };
       XMLHttpRequest.prototype.send = function(...args) {
-        const xhr = this;
         const url = xhrUrls.get(this) || '';
         if (targetPaths.some(p => url.includes(p))) {
-          const origHandler = xhr.onreadystatechange;
-          xhr.onreadystatechange = function() {
-            if (xhr.readyState === 4 && xhr.status === 200) {
-              try { captured.push(JSON.parse(xhr.responseText)); } catch {}
-            }
-            if (origHandler) origHandler.apply(this, arguments);
-          };
-          xhr.addEventListener('load', () => {
-            if (xhr.status === 200) {
-              try { captured.push(JSON.parse(xhr.responseText)); } catch {}
+          this.addEventListener('load', () => {
+            if (this.status === 200) {
+              try { captured.push(JSON.parse(this.responseText)); } catch {}
             }
           });
         }
         return origXHRSend.apply(this, args);
       };
 
-      // ── Resolve secUid and uniqueId for navigation ────────────────────────
+      const restore = () => {
+        window.fetch = origFetch;
+        XMLHttpRequest.prototype.open = origXHROpen;
+        XMLHttpRequest.prototype.send = origXHRSend;
+      };
+
+      // ── Resolve secUid and uniqueId ───────────────────────────────────────
       let secUid = '', uniqueId = '';
+
+      // Try inline script data
       try {
-        const scripts = document.querySelectorAll('script');
-        for (const s of scripts) {
+        for (const s of document.querySelectorAll('script')) {
           const m = s.textContent.match(/"secUid"\s*:\s*"([^"]+)"/);
           if (m) { secUid = m[1]; break; }
         }
+        const m2 = document.documentElement.innerHTML.match(/"uniqueId"\s*:\s*"([^"]+)"/);
+        if (m2) uniqueId = m2[1];
       } catch {}
-      if (!secUid) {
+
+      // Try user detail API
+      if (!uniqueId) {
         try {
-          const res = await origFetch('https://www.tiktok.com/api/user/detail/', { credentials: 'include' });
+          const res = await origFetch('/api/user/detail/', { credentials: 'include' });
           const data = await res.json();
-          secUid = data?.userInfo?.user?.secUid || '';
-          uniqueId = data?.userInfo?.user?.uniqueId || '';
-        } catch {}
-      }
-      if (!secUid) {
-        try {
-          const res = await origFetch('https://www.tiktok.com/passport/web/account/info/', { credentials: 'include' });
-          const data = await res.json();
-          secUid = data?.data?.sec_uid || '';
-          uniqueId = data?.data?.username || '';
+          secUid   = secUid   || data?.userInfo?.user?.secUid   || '';
+          uniqueId = uniqueId || data?.userInfo?.user?.uniqueId || '';
         } catch {}
       }
 
-      // ── Navigate to profile likes/bookmarks tab to trigger API call ───────
-      // We need to figure out the username for navigation
+      // Try passport API
       if (!uniqueId) {
         try {
-          // Try to get username from the profile link in the page
-          const profileLink = document.querySelector('a[href*="/@"]');
-          if (profileLink) {
-            const m = profileLink.href.match(/@([^/?]+)/);
+          const res = await origFetch('/passport/web/account/info/', { credentials: 'include' });
+          const data = await res.json();
+          secUid   = secUid   || data?.data?.sec_uid  || '';
+          uniqueId = uniqueId || data?.data?.username || '';
+        } catch {}
+      }
+
+      // Try profile link in DOM
+      if (!uniqueId) {
+        try {
+          const link = document.querySelector('a[href*="/@"]');
+          if (link) {
+            const m = link.href.match(/@([^/?&#]+)/);
             if (m) uniqueId = m[1];
           }
         } catch {}
       }
+
       if (!uniqueId) {
+        restore();
+        return { error: 'could not resolve username', secUid, videos: [] };
+      }
+
+      const currentUrl = location.href;
+      const tabPath  = type === 'likes' ? 'liked' : 'saved';
+      const targetPath = `/@${uniqueId}/${tabPath}`;
+
+      // ── SPA navigation — keeps this script alive ──────────────────────────
+      // Use the site's own client-side router so no full page reload occurs.
+      // Full page reloads destroy the patched fetch/XHR and this execution context.
+      let navigated = false;
+
+      // Method 1: Next.js router (most reliable for Next.js apps)
+      try {
+        const router = window.next?.router;
+        if (router?.push) {
+          router.push(targetPath);
+          navigated = true;
+        }
+      } catch {}
+
+      // Method 2: history.pushState + synthetic popstate
+      // React Router and Next.js both listen to popstate for SPA navigation.
+      if (!navigated) {
         try {
-          // Try /@me redirect
-          const res = await origFetch('https://www.tiktok.com/@me', { credentials: 'include', redirect: 'follow' });
-          const m = res.url.match(/@([^/?]+)/);
-          if (m) uniqueId = m[1];
+          history.pushState({}, '', targetPath);
+          window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+          navigated = true;
         } catch {}
       }
 
-      // Navigate using SPA navigation by updating the URL
-      const tabPath = type === 'likes' ? 'liked' : 'saved';
-      const targetUrl = uniqueId
-        ? `https://www.tiktok.com/@${uniqueId}?tab=${tabPath}`
-        : null;
-
-      if (targetUrl) {
-        // Use history.pushState + popstate to trigger SPA navigation
-        const currentUrl = location.href;
-        window.location.href = targetUrl;
-
-        // Wait for the API response to be captured
-        const maxWait = 15000;
-        const start = Date.now();
-        while (captured.length === 0 && Date.now() - start < maxWait) {
-          await sleep(500);
-        }
-
-        // Navigate back to where we were
-        await sleep(1000);
-        window.location.href = currentUrl;
-      } else {
-        // Can't navigate — restore and return error
-        window.fetch = origFetch;
-        XMLHttpRequest.prototype.open = origXHROpen;
-        XMLHttpRequest.prototype.send = origXHRSend;
-        return { error: 'could not resolve username for navigation', secUid, videos: [] };
+      if (!navigated) {
+        restore();
+        return { error: 'could not trigger SPA navigation', secUid, videos: [] };
       }
 
-      // Wait a bit more for any additional captures
-      await sleep(2000);
+      // ── Wait for API calls ────────────────────────────────────────────────
+      const start = Date.now();
+      while (captured.length === 0 && Date.now() - start < 15000) {
+        await sleep(500);
+      }
 
-      // Restore original fetch/XHR
-      window.fetch = origFetch;
-      XMLHttpRequest.prototype.open = origXHROpen;
-      XMLHttpRequest.prototype.send = origXHRSend;
+      // ── Scroll to trigger pagination ──────────────────────────────────────
+      const countItems = () => captured.reduce(
+        (n, d) => n + (d.itemList?.length || d.item_list?.length || 0), 0
+      );
+      const maxScrolls = limit > 0 ? 3 : 12;
+      for (let i = 0; i < maxScrolls; i++) {
+        if (limit > 0 && countItems() >= limit) break;
+        window.scrollBy({ top: 3000, behavior: 'smooth' });
+        await sleep(2500);
+      }
+      await sleep(1000);
+
+      // ── Navigate back ─────────────────────────────────────────────────────
+      try {
+        const router = window.next?.router;
+        if (router?.push) {
+          router.push(currentUrl);
+        } else {
+          history.pushState({}, '', currentUrl);
+          window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+        }
+      } catch {}
+
+      restore();
 
       // ── Parse captured responses ──────────────────────────────────────────
       const videos = [];
@@ -299,7 +324,7 @@ async function fetchVideoListInBrowser(tab, type, limit) {
           const vid = item.video || {};
           let videoUrl = '';
 
-          if (vid.bitrateInfo && vid.bitrateInfo.length > 0) {
+          if (vid.bitrateInfo?.length > 0) {
             const best = vid.bitrateInfo.reduce((a, b) =>
               (b.Bitrate || b.bitrate || 0) > (a.Bitrate || a.bitrate || 0) ? b : a
             );
@@ -320,9 +345,9 @@ async function fetchVideoListInBrowser(tab, type, limit) {
             duration:   vid.duration || 0,
             createTime: item.createTime || 0,
           });
-          if (limit && videos.length >= limit) break;
+          if (limit > 0 && videos.length >= limit) break;
         }
-        if (limit && videos.length >= limit) break;
+        if (limit > 0 && videos.length >= limit) break;
       }
 
       return {
@@ -330,13 +355,13 @@ async function fetchVideoListInBrowser(tab, type, limit) {
         secUid,
         uniqueId,
         capturedResponses: captured.length,
-        navigatedTo: targetUrl,
+        navigatedTo: targetPath,
       };
     },
     args: [type, limit],
   });
 
-  return result?.result || { error: 'script execution failed' };
+  return result?.result || { error: 'script execution failed', videos: [] };
 }
 
 // ── Run full sync (fetch lists in browser → send to container for download) ──
@@ -365,7 +390,7 @@ async function runFullSync({ testMode = false } = {}) {
   // Fetch likes from browser
   const likesResult = await fetchVideoListInBrowser(tab, 'likes', limit);
   if (likesResult.error) {
-    console.warn('[ttpull] likes fetch error:', likesResult.error, likesResult.probe || '');
+    console.warn('[ttpull] likes fetch error:', likesResult.error);
   }
   const likes = likesResult.videos || [];
 
@@ -374,18 +399,18 @@ async function runFullSync({ testMode = false } = {}) {
   // Fetch bookmarks from browser
   const bookmarksResult = await fetchVideoListInBrowser(tab, 'bookmarks', limit);
   if (bookmarksResult.error) {
-    console.warn('[ttpull] bookmarks fetch error:', bookmarksResult.error, bookmarksResult.probe || '');
+    console.warn('[ttpull] bookmarks fetch error:', bookmarksResult.error);
   }
   const bookmarks = bookmarksResult.videos || [];
 
-  // Send debug info to container for inspection
+  // Send debug info to container
   try {
     await fetch(`${serverUrl}/debug/fetch-result`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        likes: { count: likes.length, error: likesResult.error, probes: likesResult.probes, endpoint: likesResult.endpoint, secUid: likesResult.secUid },
-        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, probes: bookmarksResult.probes, endpoint: bookmarksResult.endpoint, secUid: bookmarksResult.secUid },
+        likes:     { count: likes.length,     error: likesResult.error,     secUid: likesResult.secUid,     uniqueId: likesResult.uniqueId,     capturedResponses: likesResult.capturedResponses,     navigatedTo: likesResult.navigatedTo },
+        bookmarks: { count: bookmarks.length, error: bookmarksResult.error, secUid: bookmarksResult.secUid, uniqueId: bookmarksResult.uniqueId, capturedResponses: bookmarksResult.capturedResponses, navigatedTo: bookmarksResult.navigatedTo },
       }),
     });
   } catch {}
