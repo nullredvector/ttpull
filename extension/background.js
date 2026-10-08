@@ -151,7 +151,7 @@ async function pushSession({ manual = false } = {}) {
 // that the site makes with its own anti-bot signatures.
 
 async function fetchVideoListInBrowser(tab, type, limit, knownId = '') {
-  const [result] = await chrome.scripting.executeScript({
+  const exec = chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: 'MAIN',
     func: async (type, limit, knownId) => {
@@ -416,6 +416,16 @@ async function fetchVideoListInBrowser(tab, type, limit, knownId = '') {
     args: [type, limit, knownId],
   });
 
+  let result;
+  try {
+    [result] = await Promise.race([
+      exec,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timed out after 120s')), 120000)),
+    ]);
+  } catch (err) {
+    return { error: `script failed: ${err.message}`, videos: [] };
+  }
+
   return result?.result || { error: 'script execution failed', videos: [] };
 }
 
@@ -440,6 +450,19 @@ async function resetTab(tab) {
 // ── Run full sync (fetch lists in browser → send to container for download) ──
 
 async function runFullSync({ testMode = false } = {}) {
+  // Extension API calls reset the worker's idle timer; without this Chrome
+  // can stop the worker partway through a long browser step.
+  const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
+  try {
+    await runFullSyncInner({ testMode });
+  } catch (err) {
+    await saveSettings({ lastStatus: `sync failed: ${err.message}` });
+  } finally {
+    clearInterval(keepAlive);
+  }
+}
+
+async function runFullSyncInner({ testMode = false } = {}) {
   const { serverUrl, enabled, testMode: savedTestMode } = await getSettings();
   const useTestMode = testMode || savedTestMode;
   const limit = useTestMode ? 2 : 0;
@@ -458,6 +481,7 @@ async function runFullSync({ testMode = false } = {}) {
     return;
   }
 
+  await saveSettings({ lastStatus: 'resetting tab…' });
   tab = await resetTab(tab);
 
   await saveSettings({ lastStatus: 'fetching liked videos…' });
@@ -472,7 +496,9 @@ async function runFullSync({ testMode = false } = {}) {
   await saveSettings({ lastStatus: `got ${likes.length} likes, fetching bookmarks…` });
 
   // Fetch bookmarks from browser
+  await saveSettings({ lastStatus: `got ${likes.length} likes, resetting tab…` });
   tab = await resetTab(tab);
+  await saveSettings({ lastStatus: 'fetching bookmarks…' });
   const bookmarksResult = await fetchVideoListInBrowser(tab, 'bookmarks', limit, likesResult.uniqueId || '');
   if (bookmarksResult.error) {
     console.warn('[ttpull] bookmarks fetch error:', bookmarksResult.error);
