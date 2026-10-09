@@ -26,8 +26,20 @@ export async function recordFailure(kind, id) {
   failures[kind] ??= {};
   failures[kind][id] = (failures[kind][id] || 0) + 1;
   await persist();
+  return failures[kind][id];
 }
 
 export async function clearFailure(kind, id) {
   if (failures[kind]?.[id]) { delete failures[kind][id]; await persist(); }
+}
+
+// Small persistent flags (alert state), so a restart doesn't repeat alerts.
+const FLAG_FILE = path.join(STATE_DIR, 'flags.json');
+let flags = {};
+try { flags = JSON.parse(await fs.readFile(FLAG_FILE, 'utf8')); } catch { /* none yet */ }
+
+export const getFlag = k => flags[k];
+export async function setFlag(k, v) {
+  if (v === undefined || v === null || v === false) delete flags[k]; else flags[k] = v;
+  await fs.writeFile(FLAG_FILE, JSON.stringify(flags)).catch(() => {});
 }

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { scheduleJobs, runNow } from './scheduler.js';
 import { getJobState } from './downloader.js';
 import { STATE_DIR } from './state.js';
+import { notify, notificationsEnabled } from './notify.js';
 import { runBrowserSync, runProbe, runVerify, syncState, screenshotPath } from './browser-sync.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -115,6 +116,13 @@ app.post('/sync', (req, res) => {
   const opts = { test: req.query.test === '1', full: req.query.full === '1' };
   runBrowserSync(() => session, opts).catch(e => console.error('[sync] error:', e));
   res.json({ message: 'sync started', ...opts });
+});
+
+// POST /notify/test — send a test push to confirm the phone is set up
+app.post('/notify/test', async (req, res) => {
+  if (!notificationsEnabled()) return res.status(400).json({ error: 'NTFY_URL is not set' });
+  const ok = await notify('test', 'ttpull: test notification', 'If you can read this, push notifications are working.', { tags: ['bell'] });
+  res.status(ok ? 200 : 502).json({ sent: ok });
 });
 
 // POST /verify — read-only check of the whole archive against TikTok's lists (minutes);

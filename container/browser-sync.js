@@ -5,7 +5,8 @@
 import { chromium } from 'playwright';
 import fs from 'fs/promises';
 import path from 'path';
-import { STATE_DIR, givenUp } from './state.js';
+import { STATE_DIR, givenUp, getFlag, setFlag } from './state.js';
+import { notify, heartbeat } from './notify.js';
 import { readKnownIds, auditIds } from './archive-db.js';
 import { downloadVideos, getJobState } from './downloader.js';
 import { listInPage, envInPage } from './page-fetch.js';
@@ -149,6 +150,57 @@ export async function runProbe(getSession) {
   return out;
 }
 
+
+// ── Notifications ────────────────────────────────────────────────────────────
+
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+function authorsOf(videos) {
+  const names = [...new Set(videos.map(v => v.authorName).filter(Boolean))];
+  return names.length ? ` (${names.slice(0, 3).map(n => '@' + n).join(', ')}${names.length > 3 ? ', …' : ''})` : '';
+}
+
+async function onSyncSuccess(opts, likes, bookmarks, seconds) {
+  if (getFlag('loginAlert')) {
+    await setFlag('loginAlert', false);
+    await notify('login', 'ttpull: login restored', 'Syncing again.', { tags: ['white_check_mark'] });
+  }
+  if (getFlag('failures')) {
+    await setFlag('failures', false);
+    await notify('failure', 'ttpull: sync recovered', 'Syncing normally again.', { tags: ['white_check_mark'] });
+  }
+  const parts = [];
+  if (likes.length) parts.push(`${plural(likes.length, 'like')}${authorsOf(likes)}`);
+  if (bookmarks.length) parts.push(`${plural(bookmarks.length, 'bookmark')}${authorsOf(bookmarks)}`);
+  if (opts.full && !opts.test) {
+    await notify('catchup', 'ttpull: catch-up complete',
+      `${parts.join(' and ') || 'Nothing new'} added in ${Math.round(seconds / 60)} min.`, { tags: ['tada'] });
+  } else if (parts.length && !opts.test) {
+    await notify('new', 'ttpull: new videos', `${parts.join(' and ')} downloaded.`, { priority: 2, tags: ['inbox_tray'] });
+  }
+  await heartbeat();
+}
+
+async function onSyncFailure(message, opts) {
+  if (opts.test) return;
+  if (/login required/i.test(message)) {
+    if (!getFlag('loginAlert')) {
+      await setFlag('loginAlert', true);
+      await notify('login', 'ttpull: login needed',
+        'TikTok is signed out in the container. Open TikTok in your browser and click "Push Session Now" in the extension.',
+        { priority: 5, tags: ['warning', 'key'] });
+    }
+    return;
+  }
+  const n = (getFlag('failureCount') || 0) + 1;
+  await setFlag('failureCount', n);
+  if (n >= 2 && !getFlag('failures')) {
+    await setFlag('failures', true);
+    await notify('failure', 'ttpull: sync is failing', `${n} failed runs in a row. Last error: ${message}`,
+      { priority: 4, tags: ['rotating_light'] });
+  }
+}
+
 // opts: { test, full }   test → only the 2 newest new videos per list
 //                        full → don't stop at the first page of known videos
 export async function runBrowserSync(getSession, opts = {}) {
@@ -260,9 +312,12 @@ export async function runBrowserSync(getSession, opts = {}) {
       user: uniqueId,
     };
     syncState.lastRun = syncState.lastSummary.at;
+    await setFlag('failureCount', 0);
+    await onSyncSuccess(opts, likes, bookmarks, syncState.lastSummary.seconds);
   } catch (e) {
     syncState.lastError = e.message;
     console.error('[sync] failed:', e.message);
+    await onSyncFailure(e.message, opts).catch(() => {});
     try { await context?.pages()?.[0]?.screenshot({ path: SHOT_FILE }); } catch {}
   } finally {
     syncState.running = false;
@@ -327,6 +382,11 @@ export async function runVerify(getSession) {
     report.finishedAt = new Date().toISOString();
     report.allComplete = report.likes.complete && report.bookmarks.complete;
     syncState.lastVerify = report;
+    const gaps = n => report[n].missingFile.count + report[n].notMarkedDownloaded.count + report[n].noVideoRecord.count + report[n].noAuthorRecord.count;
+    await notify('verify',
+      report.allComplete ? 'ttpull: archive verified' : 'ttpull: archive has gaps',
+      `Likes: ${report.likes.onTikTok} on TikTok, ${gaps('likes')} problems. Bookmarks: ${report.bookmarks.onTikTok} on TikTok, ${gaps('bookmarks')} problems.`,
+      { priority: report.allComplete ? 3 : 4, tags: [report.allComplete ? 'white_check_mark' : 'warning'] });
   } catch (e) {
     syncState.lastVerify = { error: e.message, at: new Date().toISOString() };
     console.error('[verify] failed:', e.message);
