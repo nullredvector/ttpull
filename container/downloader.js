@@ -442,7 +442,7 @@ export async function runJob(session, opts = {}) {
     console.log(`[job] processing ${bookmarked.length} bookmarked videos`);
 
     if (bookmarked.length > 0) {
-      const bmDir     = path.join(ARCHIVE_DIR, 'data', 'Bookmarks');
+      const bmDir     = path.join(ARCHIVE_DIR, 'data', 'Favorites');
       const bmCovers  = path.join(bmDir, 'covers');
       const bmVideos  = path.join(bmDir, 'videos');
       await fs.mkdir(bmCovers, { recursive: true });
@@ -552,7 +552,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
     // ── Bookmarks ────────────────────────────────────────────────────────────
     if (bookmarks.length > 0) {
       console.log(`[dl] downloading ${bookmarks.length} bookmarked videos`);
-      const bmDir    = path.join(ARCHIVE_DIR, 'data', 'Bookmarks');
+      const bmDir    = path.join(ARCHIVE_DIR, 'data', 'Favorites');
       const bmCovers = path.join(bmDir, 'covers');
       const bmVideos = path.join(bmDir, 'videos');
       await fs.mkdir(bmCovers, { recursive: true });
