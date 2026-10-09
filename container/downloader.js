@@ -5,6 +5,9 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createWriteStream } from 'fs';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import { registerVideos } from './archive-db.js';
 import { recordFailure, clearFailure, MAX_FAILURES } from './state.js';
 import { notify } from './notify.js';
@@ -343,37 +346,35 @@ async function fetchBookmarkedVideos(cookies, ctx, limit = 0) {
 
 // ── File download ─────────────────────────────────────────────────────────────
 
-const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50 MB — matches s.js limit
+// No size cap: always keep the highest-quality file the site offers.
+// Streams to disk (a .part file, renamed when complete) so large videos don't sit in memory.
+const DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 
-async function downloadFile(url, destPath, headers) {
-  // HEAD first to check size
-  try {
-    const head = await fetch(url, { method: 'HEAD', headers });
-    const size = parseInt(head.headers.get('content-length') || '0');
-    if (size > MAX_VIDEO_BYTES) {
-      console.log(`[skip] ${path.basename(destPath)} too large (${Math.round(size / 1e6)}MB)`);
-      return false;
-    }
-  } catch { /* HEAD not supported, proceed anyway */ }
-
-  const buf = await fetchBinary(url, headers);
-  if (buf.length > MAX_VIDEO_BYTES) {
-    console.log(`[skip] ${path.basename(destPath)} too large (${Math.round(buf.length / 1e6)}MB)`);
-    return false;
-  }
-
-  // Reject anything that isn't plausibly a video (error pages, truncated bodies)
-  const head = buf.subarray(4, 8).toString('latin1');
-  if (buf.length < 10 * 1024 || head !== 'ftyp') {
-    console.log(`[skip] ${path.basename(destPath)} is not a valid mp4 (${buf.length} bytes, header "${buf.subarray(0, 12).toString('latin1').replace(/[^\x20-\x7e]/g, '.')}")`);
-    return false;
-  }
+export async function downloadFile(url, destPath, headers) {
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.body) throw new Error('empty response body');
 
   const tmp = `${destPath}.part`;
-  await fs.writeFile(tmp, buf);
-  await fs.rename(tmp, destPath);
-  console.log(`[dl] saved ${path.basename(destPath)} (${(buf.length / 1e6).toFixed(1)}MB)`);
-  return true;
+  try {
+    await pipeline(Readable.fromWeb(res.body), createWriteStream(tmp));
+
+    // Reject anything that isn't plausibly a video (error pages, truncated bodies)
+    const fh = await fs.open(tmp, 'r');
+    const head = Buffer.alloc(12);
+    await fh.read(head, 0, 12, 0);
+    await fh.close();
+    const size = (await fs.stat(tmp)).size;
+    if (size < 10 * 1024 || head.subarray(4, 8).toString('latin1') !== 'ftyp') {
+      throw new Error(`not a valid mp4 (${size} bytes, header "${head.toString('latin1').replace(/[^\x20-\x7e]/g, '.')}")`);
+    }
+    await fs.rename(tmp, destPath);
+    console.log(`[dl] saved ${path.basename(destPath)} (${(size / 1e6).toFixed(1)}MB)`);
+    return true;
+  } catch (e) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
 }
 
 // ── Main download job ─────────────────────────────────────────────────────────
@@ -548,7 +549,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
 
         if (!videoExists && v.videoUrl) {
           console.log(`[dl:likes] ${i + 1}/${likes.length} downloading ${v.id}`);
-          const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(() => false);
+          const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(e => { console.error(`[dl] ${v.id} failed: ${e.message}`); return false; });
           if (ok) { jobState.counts.likes++; await clearFailure('likes', v.id); } else { jobState.counts.skipped++; if (await recordFailure('likes', v.id) === MAX_FAILURES) await notify('gaveup', 'ttpull: skipping a like', `Gave up on liked video ${v.id}${v.authorName ? ' by @' + v.authorName : ''} after ${MAX_FAILURES} failed downloads (often over the size cap).`, { tags: ['no_entry'] }); }
           await sleep(300 + Math.random() * 200);
         } else if (videoExists) {
@@ -589,7 +590,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
 
         if (!videoExists && v.videoUrl) {
           console.log(`[dl:bookmarks] ${i + 1}/${bookmarks.length} downloading ${v.id}`);
-          const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(() => false);
+          const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(e => { console.error(`[dl] ${v.id} failed: ${e.message}`); return false; });
           if (ok) { jobState.counts.bookmarks++; await clearFailure('bookmarked', v.id); } else { jobState.counts.skipped++; if (await recordFailure('bookmarked', v.id) === MAX_FAILURES) await notify('gaveup', 'ttpull: skipping a bookmark', `Gave up on bookmarked video ${v.id}${v.authorName ? ' by @' + v.authorName : ''} after ${MAX_FAILURES} failed downloads.`, { tags: ['no_entry'] }); }
           await sleep(300 + Math.random() * 200);
         } else if (videoExists) {

@@ -29,6 +29,11 @@ export async function recordFailure(kind, id) {
   return failures[kind][id];
 }
 
+export async function clearAllFailures() {
+  failures = {};
+  await persist();
+}
+
 export async function clearFailure(kind, id) {
   if (failures[kind]?.[id]) { delete failures[kind][id]; await persist(); }
 }

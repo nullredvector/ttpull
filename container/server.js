@@ -7,7 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { scheduleJobs, runNow } from './scheduler.js';
 import { getJobState } from './downloader.js';
-import { STATE_DIR } from './state.js';
+import { STATE_DIR, clearAllFailures, getFlag, setFlag } from './state.js';
 import { notify, notificationsEnabled } from './notify.js';
 import { runBrowserSync, runProbe, runVerify, syncState, screenshotPath } from './browser-sync.js';
 
@@ -217,6 +217,13 @@ app.get('/debug/session', (req, res) => {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3847;
+// The size cap is gone: forget past failures (many were size skips) so they get retried.
+if (!getFlag('sizeCapRemoved')) {
+  await clearAllFailures();
+  await setFlag('sizeCapRemoved', true);
+  console.log('[server] cleared old download failures after removing the size cap');
+}
+
 app.listen(PORT, () => {
   console.log(`[server] listening on :${PORT}`);
   scheduleJobs(() => session);
