@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import { scheduleJobs, runNow } from './scheduler.js';
 import { getJobState } from './downloader.js';
 import { STATE_DIR } from './state.js';
-import { runBrowserSync, runProbe, syncState, screenshotPath } from './browser-sync.js';
+import { runBrowserSync, runProbe, runVerify, syncState, screenshotPath } from './browser-sync.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SESSION_FILE = path.join(STATE_DIR, 'session.json');
@@ -116,6 +116,15 @@ app.post('/sync', (req, res) => {
   runBrowserSync(() => session, opts).catch(e => console.error('[sync] error:', e));
   res.json({ message: 'sync started', ...opts });
 });
+
+// POST /verify — read-only check of the whole archive against TikTok's lists (minutes);
+// GET /verify shows the latest result.
+app.post('/verify', (req, res) => {
+  if (syncState.running || getJobState().running) return res.status(409).json({ error: 'a sync is running' });
+  runVerify(() => session).catch(e => console.error('[verify] error:', e));
+  res.json({ message: 'verify started — GET /verify for the result' });
+});
+app.get('/verify', (req, res) => res.json(syncState.lastVerify || { none: true }));
 
 // GET /debug/probe — environment + signing diagnostics (takes ~1 minute)
 app.get('/debug/probe', async (req, res) => {

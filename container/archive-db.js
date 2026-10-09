@@ -183,3 +183,26 @@ export async function readKnownIds(archiveDir, kind) {
   } catch { /* none yet */ }
   return ids;
 }
+
+// Read-only audit of a list of ids against the database. `kind`: 'likes' | 'bookmarked'.
+// Returns what the viewer would NOT show, and why.
+export async function auditIds(archiveDir, kind, ids) {
+  const dir = path.join(archiveDir, 'data', '.appdata');
+  const list = await readDb(dir, kind);
+  const l = kind === 'likes' ? list.data.likes : list.data;
+  const downloaded = new Set((l.downloaded || []).map(String));
+  const official   = new Set((l.officialList || []).map(String));
+  const videos  = (await readDb(dir, 'videos')).data;
+  const authors = (await readDb(dir, 'authors')).data;
+
+  const out = { notDownloaded: [], notOfficial: [], noVideoRecord: [], noAuthorRecord: [] };
+  for (const raw of ids) {
+    const id = String(raw);
+    if (!downloaded.has(id)) out.notDownloaded.push(id);
+    if (!official.has(id)) out.notOfficial.push(id);
+    const v = videos[id];
+    if (!v) out.noVideoRecord.push(id);
+    else if (!authors[v.authorId]) out.noAuthorRecord.push(id);
+  }
+  return out;
+}

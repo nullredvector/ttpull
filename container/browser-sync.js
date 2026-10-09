@@ -6,7 +6,7 @@ import { chromium } from 'playwright';
 import fs from 'fs/promises';
 import path from 'path';
 import { STATE_DIR, givenUp } from './state.js';
-import { readKnownIds } from './archive-db.js';
+import { readKnownIds, auditIds } from './archive-db.js';
 import { downloadVideos, getJobState } from './downloader.js';
 import { listInPage, envInPage } from './page-fetch.js';
 
@@ -29,6 +29,7 @@ export const syncState = {
   lastError: null,
   lastSummary: null,
   lastDiag: null,
+  lastVerify: null,
 };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -269,6 +270,72 @@ export async function runBrowserSync(getSession, opts = {}) {
     await context?.close().catch(() => {});
   }
   return syncState.lastSummary;
+}
+
+
+// Read-only: compare TikTok's complete lists with the archive (files + database).
+export async function runVerify(getSession) {
+  if (syncState.running || getJobState().running) return { skipped: true };
+  syncState.running = true;
+  syncState.phase = 'verifying';
+  syncState.lastVerify = { running: true, startedAt: new Date().toISOString() };
+  let context;
+  try {
+    context = await launchContext();
+    const page = context.pages()[0] || await context.newPage();
+    const session = getSession();
+    if (!(await isLoggedIn(context)) && session?.cookies?.length) {
+      await context.addCookies(session.cookies.map(toPlaywrightCookie)).catch(() => {});
+    }
+    await openHome(page);
+
+    const report = { startedAt: syncState.lastVerify.startedAt };
+    for (const [kind, type, sub] of [['likes', 'likes', 'Likes'], ['bookmarked', 'bookmarks', 'Favorites']]) {
+      syncState.phase = `verifying ${type}`;
+      const r = await listWithRetry(page, { type, known: [], limit: 0, stopOnKnown: false, maxPages: MAX_PAGES }, type);
+      if (r.loggedOut) throw new Error('login required');
+      if (r.error) throw new Error(`${type}: ${r.error}`);
+      const ids = r.videos.map(v => String(v.id));
+
+      const videosDir = path.join(ARCHIVE_DIR, 'data', sub, 'videos');
+      const onDisk = new Set();
+      try {
+        for (const f of await fs.readdir(videosDir)) {
+          if (!f.endsWith('.mp4')) continue;
+          const st = await fs.stat(path.join(videosDir, f)).catch(() => null);
+          if (st && st.size > 10 * 1024) onDisk.add(f.slice(0, -4));
+        }
+      } catch { /* folder missing */ }
+
+      const missingFile = ids.filter(id => !onDisk.has(id));
+      const gaveUp = givenUp(kind);
+      const audit = await auditIds(ARCHIVE_DIR, kind, ids);
+      const sample = a => ({ count: a.length, sample: a.slice(0, 25) });
+      report[type] = {
+        onTikTok: ids.length,
+        pagesFetched: r.diag.pagesFetched,
+        missingFile: sample(missingFile),
+        gaveUpAfterFailures: sample(ids.filter(id => gaveUp.has(id))),
+        notMarkedDownloaded: sample(audit.notDownloaded),
+        notInOfficialList: sample(audit.notOfficial),
+        noVideoRecord: sample(audit.noVideoRecord),
+        noAuthorRecord: sample(audit.noAuthorRecord),
+        complete: !missingFile.length && !audit.notDownloaded.length && !audit.noVideoRecord.length && !audit.noAuthorRecord.length,
+      };
+      console.log(`[verify] ${type}: ${ids.length} on TikTok, ${missingFile.length} missing file, ${audit.notDownloaded.length} not in database, ${audit.noVideoRecord.length + audit.noAuthorRecord.length} hidden by missing records`);
+    }
+    report.finishedAt = new Date().toISOString();
+    report.allComplete = report.likes.complete && report.bookmarks.complete;
+    syncState.lastVerify = report;
+  } catch (e) {
+    syncState.lastVerify = { error: e.message, at: new Date().toISOString() };
+    console.error('[verify] failed:', e.message);
+  } finally {
+    syncState.running = false;
+    syncState.phase = null;
+    await context?.close().catch(() => {});
+  }
+  return syncState.lastVerify;
 }
 
 export const screenshotPath = SHOT_FILE;
