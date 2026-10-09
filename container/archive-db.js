@@ -206,3 +206,58 @@ export async function auditIds(archiveDir, kind, ids) {
   }
   return out;
 }
+
+// Replace the official list with TikTok's current one (in TikTok's order) and
+// recompute what the viewer shows as "disappeared" (downloaded but no longer listed).
+// Refuses if the new list is suspiciously smaller than the old one.
+export async function refreshOfficialList(archiveDir, kind, ids, log = console.log) {
+  if (MODE === 'off') return { applied: false, reason: 'DB_UPDATE=off' };
+  const dir = path.join(archiveDir, 'data', '.appdata');
+  const db = await readDb(dir, kind);
+  const back = zlib.gunzipSync(Buffer.from(encode(db, db.data).match(WRAPPER)[2], 'base64')).toString('utf8');
+  if (JSON.stringify(JSON.parse(back)) !== JSON.stringify(db.data)) {
+    throw new Error(`${FILES[kind].file}: round-trip mismatch — refusing to touch the database`);
+  }
+
+  const list = kind === 'likes' ? db.data.likes : db.data;
+  const oldList = (list.officialList || []).map(String);
+  const oldSet = new Set(oldList);
+  const newList = ids.map(String);
+  const newSet = new Set(newList);
+  const downloaded = new Set((list.downloaded || []).map(String));
+
+  if (oldList.length >= 20 && newList.length < oldList.length * 0.5) {
+    return { applied: false, reason: `new list (${newList.length}) is less than half the old one (${oldList.length})` };
+  }
+
+  const disappearedNow = [...downloaded].filter(id => !newSet.has(id)).length;
+  const disappearedBefore = [...downloaded].filter(id => !oldSet.has(id)).length;
+  const summary = {
+    before: oldList.length,
+    after: newList.length,
+    removedFromList: oldList.filter(id => !newSet.has(id)).length,
+    addedToList: newList.filter(id => !oldSet.has(id)).length,
+    disappearedBefore,
+    disappearedNow,
+    newlyDisappeared: Math.max(0, disappearedNow - disappearedBefore),
+  };
+  const orderChanged = oldList.length === newList.length && oldList.some((id, i) => id !== newList[i]);
+  summary.changed = !!(summary.removedFromList || summary.addedToList || orderChanged ||
+                       list.numDisappeared !== disappearedNow);
+
+  if (!summary.changed) { log(`[db] ${kind}: official list unchanged (${newList.length})`); return { applied: false, reason: 'unchanged', ...summary }; }
+  if (MODE !== 'write') {
+    log(`[db] DRY RUN ${kind}: official list ${summary.before} → ${summary.after}, disappeared ${disappearedBefore} → ${disappearedNow} (set DB_UPDATE=write to apply)`);
+    return { applied: false, reason: 'dry run', ...summary };
+  }
+
+  const where = await backup(dir, [kind]);
+  const now = Date.now();
+  list.officialList = newList;
+  list.numDisappeared = disappearedNow;
+  list.total = newList.length + disappearedNow;
+  list.lastRun = { ...(list.lastRun || {}), start: now, finish: now };
+  await writeAtomic(path.join(dir, FILES[kind].file), encode(db, db.data));
+  log(`[db] ${kind}: official list ${summary.before} → ${summary.after}, disappeared ${disappearedBefore} → ${disappearedNow} (backup: ${path.basename(where)})`);
+  return { applied: true, ...summary };
+}

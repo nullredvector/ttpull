@@ -7,7 +7,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { STATE_DIR, givenUp, getFlag, setFlag } from './state.js';
 import { notify, heartbeat } from './notify.js';
-import { readKnownIds, auditIds } from './archive-db.js';
+import { readKnownIds, auditIds, refreshOfficialList } from './archive-db.js';
 import { downloadVideos, getJobState } from './downloader.js';
 import { listInPage, envInPage } from './page-fetch.js';
 
@@ -329,7 +329,9 @@ export async function runBrowserSync(getSession, opts = {}) {
 
 
 // Read-only: compare TikTok's complete lists with the archive (files + database).
-export async function runVerify(getSession) {
+// opts: { refresh }  refresh → also replace the database's official lists with TikTok's current ones
+//       (what the viewer uses to show videos TikTok has since removed); quiet unless something changed.
+export async function runVerify(getSession, opts = {}) {
   if (syncState.running || getJobState().running) return { skipped: true };
   syncState.running = true;
   syncState.phase = 'verifying';
@@ -351,6 +353,19 @@ export async function runVerify(getSession) {
       if (r.loggedOut) throw new Error('login required');
       if (r.error) throw new Error(`${type}: ${r.error}`);
       const ids = r.videos.map(v => String(v.id));
+
+      let refresh = null;
+      if (opts.refresh) {
+        if (!r.diag.reachedEnd) {
+          refresh = { applied: false, reason: 'list was not fetched to the end — left unchanged' };
+        } else {
+          try { refresh = await refreshOfficialList(ARCHIVE_DIR, kind, ids, m => console.log(m)); }
+          catch (e) { refresh = { applied: false, reason: e.message }; }
+        }
+        if (refresh.reason && !['unchanged', 'dry run'].includes(refresh.reason) && !refresh.applied) {
+          console.error(`[verify] ${type}: official list not updated — ${refresh.reason}`);
+        }
+      }
 
       const videosDir = path.join(ARCHIVE_DIR, 'data', sub, 'videos');
       const onDisk = new Set();
@@ -375,6 +390,7 @@ export async function runVerify(getSession) {
         notInOfficialList: sample(audit.notOfficial),
         noVideoRecord: sample(audit.noVideoRecord),
         noAuthorRecord: sample(audit.noAuthorRecord),
+        ...(refresh ? { officialListRefresh: refresh } : {}),
         complete: !missingFile.length && !audit.notDownloaded.length && !audit.noVideoRecord.length && !audit.noAuthorRecord.length,
       };
       console.log(`[verify] ${type}: ${ids.length} on TikTok, ${missingFile.length} missing file, ${audit.notDownloaded.length} not in database, ${audit.noVideoRecord.length + audit.noAuthorRecord.length} hidden by missing records`);
@@ -383,10 +399,17 @@ export async function runVerify(getSession) {
     report.allComplete = report.likes.complete && report.bookmarks.complete;
     syncState.lastVerify = report;
     const gaps = n => report[n].missingFile.count + report[n].notMarkedDownloaded.count + report[n].noVideoRecord.count + report[n].noAuthorRecord.count;
-    await notify('verify',
-      report.allComplete ? 'ttpull: archive verified' : 'ttpull: archive has gaps',
-      `Likes: ${report.likes.onTikTok} on TikTok, ${gaps('likes')} problems. Bookmarks: ${report.bookmarks.onTikTok} on TikTok, ${gaps('bookmarks')} problems.`,
-      { priority: report.allComplete ? 3 : 4, tags: [report.allComplete ? 'white_check_mark' : 'warning'] });
+    const newlyGone = ['likes', 'bookmarks'].reduce((t, n) => t + (report[n].officialListRefresh?.newlyDisappeared || 0), 0);
+    const goneLine = opts.refresh
+      ? ` Removed by TikTok since last check: ${newlyGone}.`
+      : '';
+    // A scheduled refresh stays quiet unless there is news.
+    if (!opts.refresh || !opts.scheduled || newlyGone > 0 || !report.allComplete) {
+      await notify('verify',
+        report.allComplete ? 'ttpull: archive verified' : 'ttpull: archive has gaps',
+        `Likes: ${report.likes.onTikTok} on TikTok, ${gaps('likes')} problems. Bookmarks: ${report.bookmarks.onTikTok} on TikTok, ${gaps('bookmarks')} problems.${goneLine}`,
+        { priority: report.allComplete ? 3 : 4, tags: [report.allComplete ? 'white_check_mark' : 'warning'] });
+    }
   } catch (e) {
     syncState.lastVerify = { error: e.message, at: new Date().toISOString() };
     console.error('[verify] failed:', e.message);

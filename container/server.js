@@ -125,11 +125,12 @@ app.post('/notify/test', async (req, res) => {
   res.status(ok ? 200 : 502).json({ sent: ok });
 });
 
-// POST /verify — read-only check of the whole archive against TikTok's lists (minutes);
+// POST /verify[?refresh=1] — check the archive against TikTok's lists (minutes). With refresh=1 it
+// also replaces the database's official lists (needs DB_UPDATE=write; otherwise a dry run).
 // GET /verify shows the latest result.
 app.post('/verify', (req, res) => {
   if (syncState.running || getJobState().running) return res.status(409).json({ error: 'a sync is running' });
-  runVerify(() => session).catch(e => console.error('[verify] error:', e));
+  runVerify(() => session, { refresh: req.query.refresh === '1' }).catch(e => console.error('[verify] error:', e));
   res.json({ message: 'verify started — GET /verify for the result' });
 });
 app.get('/verify', (req, res) => res.json(syncState.lastVerify || { none: true }));

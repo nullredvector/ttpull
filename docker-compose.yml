@@ -19,6 +19,8 @@ services:
       # Push notifications (ntfy). Leave NTFY_URL empty to disable.
       - NTFY_URL=${NTFY_URL:-}
       - NTFY_TOKEN=${NTFY_TOKEN:-}
+      # Daily refresh of the viewer's official lists (videos TikTok removed). 'off' disables.
+      - REFRESH_SCHEDULE=${REFRESH_SCHEDULE:-0 4 * * *}
       - NOTIFY_EVENTS=${NOTIFY_EVENTS:-login,failure,new,catchup,verify,gaveup,db}
       - HEALTHCHECK_URL=${HEALTHCHECK_URL:-}
       # Max new videos per list on a scheduled run (POST /sync?full=1 ignores it)

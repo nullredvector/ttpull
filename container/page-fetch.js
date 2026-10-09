@@ -100,7 +100,7 @@ export async function listInPage({ type, limit, known, stopOnKnown, maxPages, vi
   const fresh = [];
   let usedVariant = null;
   for (const v of variants) {
-    let cursor = '0', hasMore = true, bad = 0, sawItems = false;
+    let cursor = '0', hasMore = true, bad = 0, sawItems = false, reachedEnd = false;
     const seenCursors = new Set();
     let pages = 0;
     while (hasMore && pages < maxPages && (limit === 0 || fresh.length < limit)) {
@@ -125,13 +125,14 @@ export async function listInPage({ type, limit, known, stopOnKnown, maxPages, vi
       if (stopOnKnown && newOnes.length === 0) break;
 
       hasMore = !!j.hasMore;
+      if (!hasMore) reachedEnd = true;
       const next = String(j.cursor ?? '');
       if (!next || next === '0' || next === '-1' || seenCursors.has(next)) break;
       seenCursors.add(next);
       cursor = next;
     }
     diag.pagesFetched = (diag.pagesFetched || 0) + pages;
-    if (sawItems) { usedVariant = v.name; break; }
+    if (sawItems) { usedVariant = v.name; diag.reachedEnd = reachedEnd && !stopOnKnown && limit === 0; break; }
   }
   diag.usedVariant = usedVariant;
 
