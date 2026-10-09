@@ -122,7 +122,11 @@ async function pushSession({ manual = false } = {}) {
 
   // 5. POST to container
   const payload = {
-    cookies: cookies.map(c => ({ name: c.name, value: c.value, domain: c.domain })),
+    cookies: cookies.map(c => ({
+      name: c.name, value: c.value, domain: c.domain, path: c.path,
+      secure: c.secure, httpOnly: c.httpOnly, sameSite: c.sameSite,
+      expirationDate: c.expirationDate,
+    })),
     ctx,
     pushedAt: Date.now(),
   };

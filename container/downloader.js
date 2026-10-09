@@ -6,6 +6,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { registerVideos } from './archive-db.js';
+import { recordFailure, clearFailure } from './state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ARCHIVE_DIR = process.env.ARCHIVE_DIR || path.join(__dirname, 'archive');
@@ -48,7 +49,7 @@ function buildHeaders(cookies, ctx) {
     'accept-language': ctx.browserInfo?.language || 'en-US,en;q=0.9',
     'cookie': buildCookieHeader(cookies),
     'referer': 'https://www.tiktok.com/',
-    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'user-agent': ctx.userAgent || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'sec-fetch-site': 'same-site',
     'sec-fetch-mode': 'cors',
   };
@@ -546,7 +547,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
         if (!videoExists && v.videoUrl) {
           console.log(`[dl:likes] ${i + 1}/${likes.length} downloading ${v.id}`);
           const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(() => false);
-          if (ok) jobState.counts.likes++; else jobState.counts.skipped++;
+          if (ok) { jobState.counts.likes++; await clearFailure('likes', v.id); } else { jobState.counts.skipped++; await recordFailure('likes', v.id); }
           await sleep(300 + Math.random() * 200);
         } else if (videoExists) {
           jobState.counts.existing = (jobState.counts.existing || 0) + 1;
@@ -559,10 +560,6 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
         }
       }
 
-      await fs.writeFile(
-        path.join(likesDir, 'manifest.json'),
-        JSON.stringify({ updatedAt: new Date().toISOString(), count: likes.length, videos: likes }, null, 2),
-      );
       await registerInDb('likes', likes, videosDir);
     }
 
@@ -591,7 +588,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
         if (!videoExists && v.videoUrl) {
           console.log(`[dl:bookmarks] ${i + 1}/${bookmarks.length} downloading ${v.id}`);
           const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(() => false);
-          if (ok) jobState.counts.bookmarks++; else jobState.counts.skipped++;
+          if (ok) { jobState.counts.bookmarks++; await clearFailure('bookmarked', v.id); } else { jobState.counts.skipped++; await recordFailure('bookmarked', v.id); }
           await sleep(300 + Math.random() * 200);
         } else if (videoExists) {
           jobState.counts.existing = (jobState.counts.existing || 0) + 1;
@@ -604,10 +601,6 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
         }
       }
 
-      await fs.writeFile(
-        path.join(bmDir, 'manifest.json'),
-        JSON.stringify({ updatedAt: new Date().toISOString(), count: bookmarks.length, videos: bookmarks }, null, 2),
-      );
       await registerInDb('bookmarked', bookmarks, bmVideos);
     }
 

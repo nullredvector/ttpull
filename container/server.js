@@ -7,9 +7,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { scheduleJobs, runNow } from './scheduler.js';
 import { getJobState } from './downloader.js';
+import { STATE_DIR } from './state.js';
+import { runBrowserSync, syncState, screenshotPath } from './browser-sync.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SESSION_FILE = path.join(__dirname, 'session.json');
+const SESSION_FILE = path.join(STATE_DIR, 'session.json');
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -65,6 +67,9 @@ app.get('/status', (req, res) => {
     sessionUser: session?.ctx?.uniqueId || null,
     sessionAge: session ? Math.round((Date.now() - session.pushedAt) / 1000 / 60) + 'm ago' : null,
     ...job,
+    running: job.running || syncState.running,
+    phase: job.running ? job.phase : (syncState.phase || job.phase),
+    sync: syncState,
   });
 });
 
@@ -102,6 +107,19 @@ app.post('/videos', async (req, res) => {
   res.json({
     message: `downloading ${(likes || []).length} likes + ${(bookmarks || []).length} bookmarks`,
   });
+});
+
+// POST /sync?test=1&full=1 — run the browser sync now
+app.post('/sync', (req, res) => {
+  if (syncState.running || getJobState().running) return res.status(409).json({ error: 'sync already running' });
+  const opts = { test: req.query.test === '1', full: req.query.full === '1' };
+  runBrowserSync(() => session, opts).catch(e => console.error('[sync] error:', e));
+  res.json({ message: 'sync started', ...opts });
+});
+
+app.get('/debug/screenshot', async (req, res) => {
+  try { res.type('png').send(await fs.readFile(screenshotPath)); }
+  catch { res.status(404).json({ error: 'no screenshot yet' }); }
 });
 
 // ── Logs (ring buffer) ───────────────────────────────────────────────────────

@@ -164,3 +164,22 @@ export async function registerVideos(archiveDir, kind, videos, log = console.log
       `${stats.newInList} to list, ${stats.newDownloaded} to downloaded (backup: ${path.basename(where)})`);
   return { mode: MODE, added: stats.newDownloaded, ...stats };
 }
+
+// Ids already registered as downloaded. Falls back to files on disk when the
+// archive has no database. `kind`: 'likes' | 'bookmarked'.
+export async function readKnownIds(archiveDir, kind) {
+  const dir = path.join(archiveDir, 'data', '.appdata');
+  try {
+    const db = await readDb(dir, kind);
+    const list = kind === 'likes' ? db.data.likes : db.data;
+    return new Set((list?.downloaded || []).map(String));
+  } catch { /* no database — use disk */ }
+  const ids = new Set();
+  const sub = kind === 'likes' ? 'Likes' : 'Favorites';
+  try {
+    for (const f of await fs.readdir(path.join(archiveDir, 'data', sub, 'videos'))) {
+      if (f.endsWith('.mp4')) ids.add(f.slice(0, -4));
+    }
+  } catch { /* none yet */ }
+  return ids;
+}

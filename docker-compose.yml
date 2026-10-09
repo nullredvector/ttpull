@@ -5,17 +5,17 @@ services:
     ports:
       - "3847:3847"
     volumes:
+      # Where videos and the viewer's database live (the archive folder)
       - ${ARCHIVE_DIR:-./archive}:/app/archive
+      # Browser profile (keeps the login), session and retry state
+      - ${STATE_DIR:-./state}:/data
+    shm_size: 1gb            # Chromium needs more than Docker's 64MB default
     environment:
       - ARCHIVE_DIR=/app/archive
-      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 3 * * *}
+      - CRON_SCHEDULE=${CRON_SCHEDULE:-*/10 * * * *}
       # off | dry (log only) | write (update the archive viewer's database)
       - DB_UPDATE=${DB_UPDATE:-dry}
-    restart: unless-stopped
-
-  watchtower:
-    image: containrrr/watchtower
-    command: --interval 300 --cleanup ttpull
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - TZ=${TZ:-America/New_York}
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     restart: unless-stopped
