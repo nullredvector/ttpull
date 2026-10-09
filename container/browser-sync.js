@@ -24,6 +24,7 @@ export const syncState = {
   lastRun: null,
   lastError: null,
   lastSummary: null,
+  lastDiag: null,
 };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -133,9 +134,15 @@ export async function runBrowserSync(getSession, opts = {}) {
       if (r.loggedOut) {
         throw new Error('login required — open the site in your browser and push the session from the extension');
       }
+      syncState.lastDiag = { ...(syncState.lastDiag || {}), [type]: r.diag };
       if (r.error) throw new Error(`${type}: ${r.error}`);
       results[kind] = r;
       console.log(`[sync] ${type}: ${r.videos.length} new (${r.diag.pagesFetched || 0} page(s), known ${known.size})`);
+      if (!r.diag.pagesFetched) {
+        const last = r.diag.pages?.[r.diag.pages.length - 1] || {};
+        console.error(`[sync] ${type} requests failed:`, JSON.stringify(r.diag.pages?.slice(0, 6)));
+        throw new Error(`${type}: list requests failed (http ${last.http ?? '?'}, status ${last.status ?? '?'}, ${last.msg || last.err || 'no message'})`);
+      }
     }
 
     const likes = results.likes.videos;
