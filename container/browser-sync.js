@@ -19,6 +19,8 @@ const HEADLESS     = process.env.HEADLESS === '1';
 const BLOCK_MEDIA  = process.env.BLOCK_MEDIA !== '0';
 // Scheduled runs download at most this many new videos per list; use ?full=1 to catch up.
 const MAX_PER_RUN  = Number(process.env.MAX_PER_RUN || 60);
+const FULL_CHUNK       = Number(process.env.FULL_CHUNK || 100);
+const FULL_MAX_PASSES  = Number(process.env.FULL_MAX_PASSES || 500);
 
 export const syncState = {
   running: false,
@@ -175,52 +177,76 @@ export async function runBrowserSync(getSession, opts = {}) {
     syncState.phase = 'loading site';
     await openHome(page);
 
-    const limit = opts.test ? 2 : (opts.full ? 0 : MAX_PER_RUN);
-    const common = { limit, stopOnKnown: !opts.full, maxPages: MAX_PAGES };
-
-    const results = {};
     let seeded = false;
-    for (const [kind, type] of [['likes', 'likes'], ['bookmarked', 'bookmarks']]) {
-      syncState.phase = `fetching ${type}`;
-      const known = await readKnownIds(ARCHIVE_DIR, kind);
-      for (const id of givenUp(kind)) known.add(id);
+    let uniqueId = null;
 
-      let r = await listWithRetry(page, { type, known: [...known], ...common }, type);
+    // One list-then-download pass. Returns the videos it fetched.
+    const pass = async (limit, stopOnKnown) => {
+      const common = { limit, stopOnKnown, maxPages: MAX_PAGES };
+      const results = {};
+      for (const [kind, type] of [['likes', 'likes'], ['bookmarked', 'bookmarks']]) {
+        syncState.phase = `fetching ${type}`;
+        const known = await readKnownIds(ARCHIVE_DIR, kind);
+        for (const id of givenUp(kind)) known.add(id);
 
-      // Logged out: retry once after seeding the pushed cookies.
-      if (r.loggedOut && session?.cookies?.length && !seeded) {
-        seeded = true;
-        console.log('[sync] not logged in — re-seeding pushed cookies and reloading');
-        await context.addCookies(session.cookies.map(toPlaywrightCookie)).catch(() => {});
-        await openHome(page);
-        r = await listWithRetry(page, { type, known: [...known], ...common }, type);
+        let r = await listWithRetry(page, { type, known: [...known], ...common }, type);
+
+        // Logged out: retry once after seeding the pushed cookies.
+        if (r.loggedOut && session?.cookies?.length && !seeded) {
+          seeded = true;
+          console.log('[sync] not logged in — re-seeding pushed cookies and reloading');
+          await context.addCookies(session.cookies.map(toPlaywrightCookie)).catch(() => {});
+          await openHome(page);
+          r = await listWithRetry(page, { type, known: [...known], ...common }, type);
+        }
+
+        if (r.loggedOut) {
+          throw new Error('login required — open the site in your browser and push the session from the extension');
+        }
+        syncState.lastDiag = { ...(syncState.lastDiag || {}), [type]: r.diag };
+        if (r.error) throw new Error(`${type}: ${r.error}`);
+        results[kind] = r;
+        uniqueId = r.uniqueId || uniqueId;
+        console.log(`[sync] ${type}: ${r.videos.length} new (${r.diag.pagesFetched || 0} page(s), known ${known.size})`);
+        const first = r.diag.pages?.[0];
+        if (!r.diag.pagesFetched || !(first?.n > 0)) {
+          console.error(`[sync] ${type} returned no items:`, JSON.stringify(r.diag.pages?.slice(0, 4)));
+          throw new Error(`${type}: list came back empty or failed (http ${first?.http ?? '?'}, status ${first?.status ?? '?'}, ${first?.msg || first?.err || first?.snippet || 'no message'})`);
+        }
       }
 
-      if (r.loggedOut) {
-        throw new Error('login required — open the site in your browser and push the session from the extension');
+      const likes = results.likes.videos;
+      const bookmarks = results.bookmarked.videos;
+      if (likes.length || bookmarks.length) {
+        const userAgent = await page.evaluate(() => navigator.userAgent);
+        const language = await page.evaluate(() => navigator.language);
+        const cookies = await context.cookies('https://www.tiktok.com');
+        syncState.phase = 'downloading';
+        await downloadVideos({ cookies, ctx: { userAgent, browserInfo: { language } } }, { likes, bookmarks });
+      } else {
+        console.log('[sync] nothing new');
       }
-      syncState.lastDiag = { ...(syncState.lastDiag || {}), [type]: r.diag };
-      if (r.error) throw new Error(`${type}: ${r.error}`);
-      results[kind] = r;
-      console.log(`[sync] ${type}: ${r.videos.length} new (${r.diag.pagesFetched || 0} page(s), known ${known.size})`);
-      const first = r.diag.pages?.[0];
-      if (!r.diag.pagesFetched || !(first?.n > 0)) {
-        console.error(`[sync] ${type} returned no items:`, JSON.stringify(r.diag.pages?.slice(0, 4)));
-        throw new Error(`${type}: list came back empty or failed (http ${first?.http ?? '?'}, status ${first?.status ?? '?'}, ${first?.msg || first?.err || first?.snippet || 'no message'})`);
+      return { likes, bookmarks };
+    };
+
+    let likes = [], bookmarks = [];
+    if (opts.full && !opts.test) {
+      // Catch-up: work in chunks so download links are used while still fresh
+      // and progress is registered as it goes.
+      const seen = new Set();
+      for (let i = 1; i <= FULL_MAX_PASSES; i++) {
+        console.log(`[sync] full catch-up pass ${i} (chunk ${FULL_CHUNK})`);
+        const r = await pass(FULL_CHUNK, false);
+        const fresh = [...r.likes, ...r.bookmarks].filter(v => !seen.has(v.id));
+        r.likes.forEach(v => seen.add(v.id));
+        r.bookmarks.forEach(v => seen.add(v.id));
+        likes.push(...r.likes);
+        bookmarks.push(...r.bookmarks);
+        syncState.phase = `catch-up pass ${i}: ${likes.length} likes, ${bookmarks.length} bookmarks so far`;
+        if (!fresh.length) { console.log('[sync] catch-up complete'); break; }
       }
-    }
-
-    const likes = results.likes.videos;
-    const bookmarks = results.bookmarked.videos;
-
-    if (likes.length || bookmarks.length) {
-      const userAgent = await page.evaluate(() => navigator.userAgent);
-      const language = await page.evaluate(() => navigator.language);
-      const cookies = await context.cookies('https://www.tiktok.com');
-      syncState.phase = 'downloading';
-      await downloadVideos({ cookies, ctx: { userAgent, browserInfo: { language } } }, { likes, bookmarks });
     } else {
-      console.log('[sync] nothing new');
+      ({ likes, bookmarks } = await pass(opts.test ? 2 : MAX_PER_RUN, true));
     }
 
     await page.screenshot({ path: SHOT_FILE }).catch(() => {});
@@ -230,7 +256,7 @@ export async function runBrowserSync(getSession, opts = {}) {
       seconds: Math.round((Date.now() - started) / 1000),
       newLikes: likes.length,
       newBookmarks: bookmarks.length,
-      user: results.likes.uniqueId || null,
+      user: uniqueId,
     };
     syncState.lastRun = syncState.lastSummary.at;
   } catch (e) {
