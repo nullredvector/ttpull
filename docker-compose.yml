@@ -16,6 +16,8 @@ services:
       # off | dry (log only) | write (update the archive viewer's database)
       - DB_UPDATE=${DB_UPDATE:-dry}
       - TZ=${TZ:-America/New_York}
+      # Max new videos per list on a scheduled run (POST /sync?full=1 ignores it)
+      - MAX_PER_RUN=${MAX_PER_RUN:-60}
     labels:
       - com.centurylinklabs.watchtower.enable=true
     restart: unless-stopped

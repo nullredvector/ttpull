@@ -17,6 +17,8 @@ const HOME_URL     = 'https://www.tiktok.com/foryou';
 const MAX_PAGES    = Number(process.env.MAX_PAGES || 400);
 const HEADLESS     = process.env.HEADLESS === '1';
 const BLOCK_MEDIA  = process.env.BLOCK_MEDIA !== '0';
+// Scheduled runs download at most this many new videos per list; use ?full=1 to catch up.
+const MAX_PER_RUN  = Number(process.env.MAX_PER_RUN || 60);
 
 export const syncState = {
   running: false,
@@ -173,7 +175,7 @@ export async function runBrowserSync(getSession, opts = {}) {
     syncState.phase = 'loading site';
     await openHome(page);
 
-    const limit = opts.test ? 2 : 0;
+    const limit = opts.test ? 2 : (opts.full ? 0 : MAX_PER_RUN);
     const common = { limit, stopOnKnown: !opts.full, maxPages: MAX_PAGES };
 
     const results = {};
