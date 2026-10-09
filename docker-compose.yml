@@ -9,6 +9,8 @@ services:
     environment:
       - ARCHIVE_DIR=/app/archive
       - CRON_SCHEDULE=${CRON_SCHEDULE:-0 3 * * *}
+      # off | dry (log only) | write (update the archive viewer's database)
+      - DB_UPDATE=${DB_UPDATE:-dry}
     restart: unless-stopped
 
   watchtower:

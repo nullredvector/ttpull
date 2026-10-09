@@ -5,6 +5,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { registerVideos } from './archive-db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ARCHIVE_DIR = process.env.ARCHIVE_DIR || path.join(__dirname, 'archive');
@@ -497,6 +498,21 @@ export async function runJob(session, opts = {}) {
 // (where anti-bot signatures are handled) and sent us the metadata.
 // We just need to download the actual files from CDN URLs.
 
+
+// Register on-disk videos in the archive viewer's database (see archive-db.js).
+async function registerInDb(kind, items, videosDir) {
+  try {
+    const records = [];
+    for (const v of items) {
+      const st = await fs.stat(path.join(videosDir, `${v.id}.mp4`)).catch(() => null);
+      if (st && st.size > 10 * 1024) records.push({ ...v, size: st.size });
+    }
+    await registerVideos(ARCHIVE_DIR, kind, records, m => console.log(m));
+  } catch (e) {
+    console.error(`[db] ${kind}: ${e.message}`);
+  }
+}
+
 export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
   if (jobState.running) return;
   const { cookies, ctx } = session;
@@ -547,6 +563,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
         path.join(likesDir, 'manifest.json'),
         JSON.stringify({ updatedAt: new Date().toISOString(), count: likes.length, videos: likes }, null, 2),
       );
+      await registerInDb('likes', likes, videosDir);
     }
 
     // ── Bookmarks ────────────────────────────────────────────────────────────
@@ -591,6 +608,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
         path.join(bmDir, 'manifest.json'),
         JSON.stringify({ updatedAt: new Date().toISOString(), count: bookmarks.length, videos: bookmarks }, null, 2),
       );
+      await registerInDb('bookmarked', bookmarks, bmVideos);
     }
 
     jobState.lastRun = new Date().toISOString();

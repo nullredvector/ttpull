@@ -291,10 +291,17 @@ async function fetchVideoListInBrowser(tab, type, limit) {
           desc:       item.desc || '',
           authorId:   item.author?.id || '',
           authorName: item.author?.uniqueId || '',
+          nickname:   item.author?.nickname || '',
           coverUrl:   vid.originCover || vid.cover || '',
           videoUrl,
           duration:   vid.duration || 0,
           createTime: item.createTime || 0,
+          itemMute:   !!item.itemMute,
+          diggCount:  item.stats?.diggCount || 0,
+          playCount:  item.stats?.playCount || 0,
+          followerCount: item.authorStats?.followerCount || 0,
+          heartCount:    item.authorStats?.heartCount || 0,
+          videoCount:    item.authorStats?.videoCount || 0,
         });
         if (limit > 0 && videos.length >= limit) break;
       }
