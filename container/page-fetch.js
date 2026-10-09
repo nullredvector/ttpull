@@ -8,7 +8,7 @@
 //
 // args: { type: 'likes'|'bookmarks', limit, known: string[], stopOnKnown, maxPages }
 
-export async function listInPage({ type, limit, known, stopOnKnown, maxPages }) {
+export async function listInPage({ type, limit, known, stopOnKnown, maxPages, via }) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const knownSet = new Set(known);
   const diag = { pages: [] };
@@ -74,12 +74,27 @@ export async function listInPage({ type, limit, known, stopOnKnown, maxPages }) 
         { name: 'collect-plain', path: '/api/user/collect/item_list/', extra: {} },
       ];
 
+  const doRequest = async url => {
+    if (via === 'xhr') {
+      return new Promise((resolve, reject) => {
+        const x = new XMLHttpRequest();
+        x.open('GET', url);
+        x.withCredentials = true;
+        x.onload = () => resolve({ http: x.status, text: x.responseText });
+        x.onerror = () => reject(new Error('xhr error'));
+        x.send();
+      });
+    }
+    const r = await window.fetch(url, { credentials: 'include', cache: 'no-store' });
+    if (!r) throw new Error(`fetch returned ${String(r)}`);
+    return { http: r.status, text: await r.text() };
+  };
+
   const pageFetch = async (v, cursor) => {
-    const r = await window.fetch(buildUrl(v.path, { ...v.extra, cursor, count: 30 }), { credentials: 'include', cache: 'no-store' });
-    const text = await r.text();
+    const { http, text } = await doRequest(buildUrl(v.path, { ...v.extra, cursor, count: 30 }));
     let j = null;
     try { j = JSON.parse(text); } catch {}
-    return { http: r.status, j, len: text.length };
+    return { http, j, len: text.length, snippet: text.slice(0, 160) };
   };
 
   const fresh = [];
@@ -95,7 +110,7 @@ export async function listInPage({ type, limit, known, stopOnKnown, maxPages }) 
       const j = res.j;
       const status = j?.statusCode ?? j?.status_code ?? null;
       const list = j?.itemList || j?.item_list || [];
-      diag.pages.push({ v: v.name, cursor, http: res.http, status, msg: j?.status_msg || j?.message || null, n: list.length, hasMore: j?.hasMore ?? null });
+      diag.pages.push({ v: v.name, cursor, http: res.http, status, msg: j?.status_msg || j?.message || null, n: list.length, hasMore: j?.hasMore ?? null, ...(list.length ? {} : { len: res.len, snippet: res.snippet }) });
       if (!j || (status ?? 0) !== 0) {
         if (++bad > 2) break;
         continue;
@@ -159,4 +174,24 @@ export async function listInPage({ type, limit, known, stopOnKnown, maxPages }) 
   }
 
   return { videos, uniqueId: ctx.user.uniqueId || '', secUid: ctx.user.secUid, diag };
+}
+
+// Describes the page's signing/automation state (for diagnostics only).
+export function envInPage() {
+  const sdk = Object.keys(window).filter(k => /acrawler|webmssdk|secsdk|bdms|jsvmprt|mssdk|byted|slardar|verifyfp/i.test(k)).slice(0, 20);
+  return {
+    url: location.href,
+    ua: navigator.userAgent,
+    webdriver: navigator.webdriver,
+    plugins: navigator.plugins.length,
+    languages: navigator.languages,
+    hasChromeObj: !!window.chrome,
+    fetchNative: /\[native code\]/.test(Function.prototype.toString.call(window.fetch)),
+    fetchSrc: Function.prototype.toString.call(window.fetch).slice(0, 120),
+    xhrNative: /\[native code\]/.test(Function.prototype.toString.call(XMLHttpRequest.prototype.send)),
+    sdkGlobals: sdk,
+    cookieNames: document.cookie.split(';').map(c => c.split('=')[0].trim()),
+    hasMsTokenCookie: /(^|;\s*)msToken=/.test(document.cookie),
+    readyState: document.readyState,
+  };
 }
