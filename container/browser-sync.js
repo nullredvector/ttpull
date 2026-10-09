@@ -7,7 +7,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { STATE_DIR, givenUp, getFlag, setFlag } from './state.js';
 import { notify, heartbeat } from './notify.js';
-import { readKnownIds, auditIds, refreshOfficialList } from './archive-db.js';
+import { readKnownIds, auditIds, refreshOfficialList, touchLastRun } from './archive-db.js';
 import { downloadVideos, getJobState } from './downloader.js';
 import { listInPage, envInPage } from './page-fetch.js';
 
@@ -312,6 +312,9 @@ export async function runBrowserSync(getSession, opts = {}) {
       user: uniqueId,
     };
     syncState.lastRun = syncState.lastSummary.at;
+    for (const kind of ['likes', 'bookmarked']) {
+      await touchLastRun(ARCHIVE_DIR, kind).catch(e => console.error(`[db] ${kind}: could not update last run: ${e.message}`));
+    }
     await setFlag('failureCount', 0);
     await onSyncSuccess(opts, likes, bookmarks, syncState.lastSummary.seconds);
   } catch (e) {

@@ -261,3 +261,20 @@ export async function refreshOfficialList(archiveDir, kind, ids, log = console.l
   log(`[db] ${kind}: official list ${summary.before} → ${summary.after}, disappeared ${disappearedBefore} → ${disappearedNow} (backup: ${path.basename(where)})`);
   return { applied: true, ...summary };
 }
+
+// Stamp the viewer's "Last run" for a list after a successful sync. A tiny write
+// (no backup, so routine runs don't push real backups out of the rotation).
+export async function touchLastRun(archiveDir, kind) {
+  if (MODE !== 'write') return false;
+  const dir = path.join(archiveDir, 'data', '.appdata');
+  const db = await readDb(dir, kind);
+  const back = zlib.gunzipSync(Buffer.from(encode(db, db.data).match(WRAPPER)[2], 'base64')).toString('utf8');
+  if (JSON.stringify(JSON.parse(back)) !== JSON.stringify(db.data)) {
+    throw new Error(`${FILES[kind].file}: round-trip mismatch — not touching it`);
+  }
+  const list = kind === 'likes' ? db.data.likes : db.data;
+  const now = Date.now();
+  list.lastRun = { ...(list.lastRun || {}), start: now, finish: now };
+  await writeAtomic(path.join(dir, FILES[kind].file), encode(db, db.data));
+  return true;
+}
