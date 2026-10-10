@@ -155,11 +155,6 @@ export async function runProbe(getSession) {
 
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
-function authorsOf(videos) {
-  const names = [...new Set(videos.map(v => v.authorName).filter(Boolean))];
-  return names.length ? ` (${names.slice(0, 3).map(n => '@' + n).join(', ')}${names.length > 3 ? ', …' : ''})` : '';
-}
-
 async function onSyncSuccess(opts, likes, bookmarks, seconds) {
   if (getFlag('loginAlert')) {
     await setFlag('loginAlert', false);
@@ -170,8 +165,8 @@ async function onSyncSuccess(opts, likes, bookmarks, seconds) {
     await notify('failure', 'ttpull: sync recovered', 'Syncing normally again.', { tags: ['white_check_mark'] });
   }
   const parts = [];
-  if (likes.length) parts.push(`${plural(likes.length, 'like')}${authorsOf(likes)}`);
-  if (bookmarks.length) parts.push(`${plural(bookmarks.length, 'bookmark')}${authorsOf(bookmarks)}`);
+  if (likes.length) parts.push(`${plural(likes.length, 'like')}`);
+  if (bookmarks.length) parts.push(`${plural(bookmarks.length, 'bookmark')}`);
   if (opts.full && !opts.test) {
     await notify('catchup', 'ttpull: catch-up complete',
       `${parts.join(' and ') || 'Nothing new'} added in ${Math.round(seconds / 60)} min.`, { tags: ['tada'] });

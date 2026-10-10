@@ -550,7 +550,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
         if (!videoExists && v.videoUrl) {
           console.log(`[dl:likes] ${i + 1}/${likes.length} downloading ${v.id}`);
           const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(e => { console.error(`[dl] ${v.id} failed: ${e.message}`); return false; });
-          if (ok) { jobState.counts.likes++; await clearFailure('likes', v.id); } else { jobState.counts.skipped++; if (await recordFailure('likes', v.id) === MAX_FAILURES) await notify('gaveup', 'ttpull: skipping a like', `Gave up on liked video ${v.id}${v.authorName ? ' by @' + v.authorName : ''} after ${MAX_FAILURES} failed downloads (often over the size cap).`, { tags: ['no_entry'] }); }
+          if (ok) { jobState.counts.likes++; await clearFailure('likes', v.id); } else { jobState.counts.skipped++; if (await recordFailure('likes', v.id) === MAX_FAILURES) await notify('gaveup', 'ttpull: skipping a like', `Gave up on liked video ${v.id} after ${MAX_FAILURES} failed downloads (often over the size cap).`, { tags: ['no_entry'] }); }
           await sleep(300 + Math.random() * 200);
         } else if (videoExists) {
           jobState.counts.existing = (jobState.counts.existing || 0) + 1;
@@ -591,7 +591,7 @@ export async function downloadVideos(session, { likes = [], bookmarks = [] }) {
         if (!videoExists && v.videoUrl) {
           console.log(`[dl:bookmarks] ${i + 1}/${bookmarks.length} downloading ${v.id}`);
           const ok = await downloadFile(v.videoUrl, videoPath, headers).catch(e => { console.error(`[dl] ${v.id} failed: ${e.message}`); return false; });
-          if (ok) { jobState.counts.bookmarks++; await clearFailure('bookmarked', v.id); } else { jobState.counts.skipped++; if (await recordFailure('bookmarked', v.id) === MAX_FAILURES) await notify('gaveup', 'ttpull: skipping a bookmark', `Gave up on bookmarked video ${v.id}${v.authorName ? ' by @' + v.authorName : ''} after ${MAX_FAILURES} failed downloads.`, { tags: ['no_entry'] }); }
+          if (ok) { jobState.counts.bookmarks++; await clearFailure('bookmarked', v.id); } else { jobState.counts.skipped++; if (await recordFailure('bookmarked', v.id) === MAX_FAILURES) await notify('gaveup', 'ttpull: skipping a bookmark', `Gave up on bookmarked video ${v.id} after ${MAX_FAILURES} failed downloads.`, { tags: ['no_entry'] }); }
           await sleep(300 + Math.random() * 200);
         } else if (videoExists) {
           jobState.counts.existing = (jobState.counts.existing || 0) + 1;
