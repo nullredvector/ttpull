@@ -22,7 +22,7 @@ export function scheduleJobs(getSession) {
 
   console.log(`[scheduler] browser sync scheduled: "${SCHEDULE}"`);
 
-  // Daily: refresh the viewer's official lists so videos TikTok removed show as "disappeared".
+  // Daily: refresh the viewer's official lists so videos the site removed show as "disappeared".
   const REFRESH = process.env.REFRESH_SCHEDULE ?? '0 4 * * *';
   if (REFRESH && REFRESH !== 'off' && cron.validate(REFRESH)) {
     cron.schedule(REFRESH, async () => {

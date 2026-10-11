@@ -45,7 +45,7 @@ chrome.alarms.onAlarm.addListener(alarm => {
 
 // ── Find a tab ────────────────────────────────────────────────────────────────
 
-async function findTikTokTab() {
+async function findSiteTab() {
   const tabs = await chrome.tabs.query({ url: 'https://www.tiktok.com/*' });
   return tabs[0] || null;
 }
@@ -83,7 +83,7 @@ async function pushSession({ manual = false } = {}) {
   };
   let deviceId = '';
 
-  const tab = await findTikTokTab();
+  const tab = await findSiteTab();
   if (tab) {
     try {
       const [result] = await chrome.scripting.executeScript({
@@ -380,7 +380,7 @@ async function runFullSyncInner({ testMode = false } = {}) {
   // Ensure session is pushed first
   await pushSession({ manual: true });
 
-  let tab = await findTikTokTab();
+  let tab = await findSiteTab();
   if (!tab) {
     await saveSettings({ lastStatus: 'no open tab — open the site first' });
     return;

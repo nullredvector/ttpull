@@ -1,5 +1,5 @@
 // ttpull downloader
-// Uses TikTok's internal API endpoints (same ones the browser uses) with the
+// Uses the site's internal API endpoints (same ones the browser uses) with the
 // session cookies supplied by the extension. No browser required.
 
 import fs from 'fs/promises';
@@ -137,7 +137,7 @@ async function fetchBinary(url, headers) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── Resolve secUid if missing ─────────────────────────────────────────────────
-// TikTok no longer exposes __NEXT_DATA__ / SIGI_STATE on the page, so the
+// The site no longer exposes __NEXT_DATA__ / SIGI_STATE on the page, so the
 // extension may only have uid from cookies. We call the user detail API to
 // get secUid which is required for the likes endpoint.
 
@@ -245,7 +245,7 @@ async function fetchLikedVideos(cookies, ctx, limit = 0) {
 }
 
 // ── Bookmarks/Saves/Favorites API ────────────────────────────────────────────
-// TikTok has used multiple endpoint paths for this feature across versions.
+// The site has used multiple endpoint paths for this feature across versions.
 // We try each in order and use the first one that returns a non-error response.
 //
 // Known candidates:

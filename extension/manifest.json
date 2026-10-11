@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ttpull",
   "version": "1.0.0",
-  "description": "Bridge TikTok session to ttpull container for scheduled likes/bookmarks download",
+  "description": "Bridge the site session to ttpull container for scheduled likes/bookmarks download",
   "permissions": [
     "cookies",
     "storage",

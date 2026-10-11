@@ -182,7 +182,7 @@ async function onSyncFailure(message, opts) {
     if (!getFlag('loginAlert')) {
       await setFlag('loginAlert', true);
       await notify('login', 'ttpull: login needed',
-        'TikTok is signed out in the container. Open TikTok in your browser and click "Push Session Now" in the extension.',
+        'The site is signed out in the container. Open the site in your browser and click "Push Session Now" in the extension.',
         { priority: 5, tags: ['warning', 'key'] });
     }
     return;
@@ -326,9 +326,9 @@ export async function runBrowserSync(getSession, opts = {}) {
 }
 
 
-// Read-only: compare TikTok's complete lists with the archive (files + database).
-// opts: { refresh }  refresh → also replace the database's official lists with TikTok's current ones
-//       (what the viewer uses to show videos TikTok has since removed); quiet unless something changed.
+// Read-only: compare the site's complete lists with the archive (files + database).
+// opts: { refresh }  refresh → also replace the database's official lists with the site's current ones
+//       (what the viewer uses to show videos the site has since removed); quiet unless something changed.
 export async function runVerify(getSession, opts = {}) {
   if (syncState.running || getJobState().running) return { skipped: true };
   syncState.running = true;
@@ -380,7 +380,7 @@ export async function runVerify(getSession, opts = {}) {
       const audit = await auditIds(ARCHIVE_DIR, kind, ids);
       const sample = a => ({ count: a.length, sample: a.slice(0, 25) });
       report[type] = {
-        onTikTok: ids.length,
+        onSite: ids.length,
         pagesFetched: r.diag.pagesFetched,
         missingFile: sample(missingFile),
         gaveUpAfterFailures: sample(ids.filter(id => gaveUp.has(id))),
@@ -391,7 +391,7 @@ export async function runVerify(getSession, opts = {}) {
         ...(refresh ? { officialListRefresh: refresh } : {}),
         complete: !missingFile.length && !audit.notDownloaded.length && !audit.noVideoRecord.length && !audit.noAuthorRecord.length,
       };
-      console.log(`[verify] ${type}: ${ids.length} on TikTok, ${missingFile.length} missing file, ${audit.notDownloaded.length} not in database, ${audit.noVideoRecord.length + audit.noAuthorRecord.length} hidden by missing records`);
+      console.log(`[verify] ${type}: ${ids.length} on the site, ${missingFile.length} missing file, ${audit.notDownloaded.length} not in database, ${audit.noVideoRecord.length + audit.noAuthorRecord.length} hidden by missing records`);
     }
     report.finishedAt = new Date().toISOString();
     report.allComplete = report.likes.complete && report.bookmarks.complete;
@@ -399,13 +399,13 @@ export async function runVerify(getSession, opts = {}) {
     const gaps = n => report[n].missingFile.count + report[n].notMarkedDownloaded.count + report[n].noVideoRecord.count + report[n].noAuthorRecord.count;
     const newlyGone = ['likes', 'bookmarks'].reduce((t, n) => t + (report[n].officialListRefresh?.newlyDisappeared || 0), 0);
     const goneLine = opts.refresh
-      ? ` Removed by TikTok since last check: ${newlyGone}.`
+      ? ` Removed by the site since last check: ${newlyGone}.`
       : '';
     // A scheduled refresh stays quiet unless there is news.
     if (!opts.refresh || !opts.scheduled || newlyGone > 0 || !report.allComplete) {
       await notify('verify',
         report.allComplete ? 'ttpull: archive verified' : 'ttpull: archive has gaps',
-        `Likes: ${report.likes.onTikTok} on TikTok, ${gaps('likes')} problems. Bookmarks: ${report.bookmarks.onTikTok} on TikTok, ${gaps('bookmarks')} problems.${goneLine}`,
+        `Likes: ${report.likes.onSite} on the site, ${gaps('likes')} problems. Bookmarks: ${report.bookmarks.onSite} on the site, ${gaps('bookmarks')} problems.${goneLine}`,
         { priority: report.allComplete ? 3 : 4, tags: [report.allComplete ? 'white_check_mark' : 'warning'] });
     }
   } catch (e) {

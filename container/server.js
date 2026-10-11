@@ -9,6 +9,7 @@ import { scheduleJobs, runNow } from './scheduler.js';
 import { getJobState } from './downloader.js';
 import { STATE_DIR, clearAllFailures, getFlag, setFlag } from './state.js';
 import { notify, notificationsEnabled } from './notify.js';
+import { bootstrapArchive, archiveStatus } from './archive-db.js';
 import { runBrowserSync, runProbe, runVerify, syncState, screenshotPath } from './browser-sync.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -110,6 +111,13 @@ app.post('/videos', async (req, res) => {
   });
 });
 
+// GET /archive/status — whether the archive's database exists, and how much is in it.
+// Counts only (no ids, names or captions), so a player can show a "nothing downloaded yet" state.
+app.get('/archive/status', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(await archiveStatus(process.env.ARCHIVE_DIR || './archive'));
+});
+
 // POST /sync?test=1&full=1 — run the browser sync now
 app.post('/sync', (req, res) => {
   if (syncState.running || getJobState().running) return res.status(409).json({ error: 'sync already running' });
@@ -125,7 +133,7 @@ app.post('/notify/test', async (req, res) => {
   res.status(ok ? 200 : 502).json({ sent: ok });
 });
 
-// POST /verify[?refresh=1] — check the archive against TikTok's lists (minutes). With refresh=1 it
+// POST /verify[?refresh=1] — check the archive against the site's lists (minutes). With refresh=1 it
 // also replaces the database's official lists (needs DB_UPDATE=write; otherwise a dry run).
 // GET /verify shows the latest result.
 app.post('/verify', (req, res) => {
@@ -218,6 +226,10 @@ app.get('/debug/session', (req, res) => {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3847;
+// A fresh archive folder gets its database created on first start (DB_UPDATE=write only).
+try { await bootstrapArchive(process.env.ARCHIVE_DIR || './archive'); }
+catch (e) { console.error('[db] could not set up the archive:', e.message); }
+
 // The size cap is gone: forget past failures (many were size skips) so they get retried.
 if (!getFlag('sizeCapRemoved')) {
   await clearAllFailures();

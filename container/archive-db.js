@@ -1,4 +1,4 @@
-// Registers downloaded videos in the archive viewer's database files.
+// Creates and maintains the archive's database files (read by kashibox and by the older viewer).
 //
 // Each file in data/.appdata is `window.<name>_base64="<base64(gzip(JSON))>";`.
 //   db_likes.js      db_base64   { schemaVersion, user, likes: { officialList, downloaded, ... } }
@@ -9,13 +9,14 @@
 //
 // DB_UPDATE=off   never touch the database
 // DB_UPDATE=dry   (default) decode, verify the round trip and log what would change
-// DB_UPDATE=write back up the files, then write the changes
+// DB_UPDATE=write back up the files, then write the changes. Also creates the archive on first use.
 
 import fs from 'fs/promises';
 import path from 'path';
 import zlib from 'zlib';
 
-const MODE = (process.env.DB_UPDATE || 'dry').toLowerCase();
+// Read live so the mode can change at runtime (and in tests).
+const mode = () => (process.env.DB_UPDATE || 'dry').toLowerCase();
 const KEEP_BACKUPS = 10;
 
 const FILES = {
@@ -63,6 +64,124 @@ async function backup(dir, keys) {
   return dest;
 }
 
+
+// ── Bootstrap and status ─────────────────────────────────────────────────────
+
+const SCHEMA_VERSION = 7;
+const DB_KEYS = ['videos', 'authors', 'texts', 'likes', 'bookmarked'];
+const MEDIA_DIRS = ['Likes/covers', 'Likes/videos', 'Favorites/covers', 'Favorites/videos'];
+
+// Valid empty contents, same shape the files have in an existing archive.
+const EMPTY = {
+  videos:  () => ({}),
+  authors: () => ({}),
+  texts:   () => ({}),
+  likes:   () => ({
+    schemaVersion: SCHEMA_VERSION,
+    user: { uid: '', id: '', uniqueId: '', nickname: '' },
+    likes: { officialList: [], downloaded: [], total: 0, numDisappeared: 0, lastRun: { start: 0, finish: 0 } },
+  }),
+  bookmarked: () => ({ officialList: [], downloaded: [], total: 0, numDisappeared: 0, lastRun: { start: 0, finish: 0 } }),
+};
+
+function freshFile(key) {
+  const b64 = zlib.gzipSync(Buffer.from(JSON.stringify(EMPTY[key]()), 'utf8')).toString('base64');
+  return `window.${FILES[key].name}="${b64}";`;
+}
+
+// Create a file only if it does not exist yet. Written to a temp file and hard-linked into
+// place, so an existing file can never be replaced and a half-written one is never visible.
+export async function createExclusive(file, content) {
+  const tmp = `${file}.ttpull-new`;
+  await fs.writeFile(tmp, content, { flag: 'w' });
+  try {
+    await fs.link(tmp, file);
+    return true;
+  } catch (e) {
+    if (e.code === 'EEXIST') return false;
+    // Filesystem without hard links: fall back to exclusive create.
+    try { await fs.writeFile(file, content, { flag: 'wx' }); return true; }
+    catch (e2) { if (e2.code === 'EEXIST') return false; throw e2; }
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
+let warnedPartial = false, loggedDry = false;
+
+// Create the archive layout when there is no database at all. Never overwrites or modifies an
+// existing file, and does nothing if any database file already exists (a partial archive is
+// left for a person to look at). Only runs with DB_UPDATE=write.
+export async function bootstrapArchive(archiveDir, log = console.log) {
+  const m = mode();
+  if (m === 'off') return { created: [], reason: 'off' };
+  const appdata = path.join(archiveDir, 'data', '.appdata');
+
+  const exists = async k => fs.access(path.join(appdata, FILES[k].file)).then(() => true, () => false);
+  const have = [];
+  for (const k of DB_KEYS) if (await exists(k)) have.push(k);
+
+  if (have.length === DB_KEYS.length) return { created: [], reason: 'already initialised' };
+  if (have.length > 0) {
+    if (!warnedPartial) {
+      warnedPartial = true;
+      log(`[db] ${appdata} has only some database files (${have.length} of ${DB_KEYS.length}) — not creating the rest`);
+    }
+    return { created: [], reason: 'partial database' };
+  }
+
+  if (m !== 'write') {
+    if (!loggedDry) { loggedDry = true; log('[db] DRY RUN: archive has no database — would create it (set DB_UPDATE=write)'); }
+    return { created: [], reason: 'dry run' };
+  }
+
+  await fs.mkdir(appdata, { recursive: true });
+  for (const d of MEDIA_DIRS) await fs.mkdir(path.join(archiveDir, 'data', d), { recursive: true });
+  const created = [];
+  for (const k of DB_KEYS) {
+    if (await createExclusive(path.join(appdata, FILES[k].file), freshFile(k))) created.push(FILES[k].file);
+  }
+  if (created.length) log(`[db] created a new archive database (${created.length} files)`);
+  return { created };
+}
+
+const statusCache = new Map();
+
+// Counts only — no ids, names or captions.
+export async function archiveStatus(archiveDir) {
+  const out = {
+    initialized: false,
+    likes: { downloaded: 0, official: 0 },
+    bookmarks: { downloaded: 0, official: 0 },
+    lastWrite: null,
+  };
+  const dir = path.join(archiveDir, 'data', '.appdata');
+  try {
+    let newest = 0;
+    const mtimes = {};
+    for (const k of DB_KEYS) {
+      const st = await fs.stat(path.join(dir, FILES[k].file));
+      mtimes[k] = st.mtimeMs;
+      newest = Math.max(newest, st.mtimeMs);
+    }
+    const key = `${archiveDir}|${mtimes.likes}|${mtimes.bookmarked}`;
+    let counts = statusCache.get(key);
+    if (!counts) {
+      const likes = (await readDb(dir, 'likes')).data.likes || {};
+      const marks = (await readDb(dir, 'bookmarked')).data || {};
+      counts = {
+        likes: { downloaded: (likes.downloaded || []).length, official: (likes.officialList || []).length },
+        bookmarks: { downloaded: (marks.downloaded || []).length, official: (marks.officialList || []).length },
+      };
+      statusCache.clear();
+      statusCache.set(key, counts);
+    }
+    return { initialized: true, ...counts, lastWrite: new Date(newest).toISOString() };
+  } catch {
+    return out;
+  }
+}
+
 const toStr = v => (v == null ? '' : String(v));
 const uniq = arr => [...new Set(arr.filter(Boolean))];
 
@@ -70,14 +189,15 @@ const uniq = arr => [...new Set(arr.filter(Boolean))];
 //   { id, desc, authorId, authorName, nickname, createTime, itemMute,
 //     diggCount, playCount, size, followerCount, heartCount, videoCount }
 export async function registerVideos(archiveDir, kind, videos, log = console.log) {
-  if (MODE === 'off' || !videos.length) return { mode: MODE, added: 0 };
+  if (mode() === 'off' || !videos.length) return { mode: mode(), added: 0 };
+  await bootstrapArchive(archiveDir, log);
   const dir = path.join(archiveDir, 'data', '.appdata');
 
   try {
     await fs.access(path.join(dir, FILES.videos.file));
   } catch {
     log(`[db] no database in ${dir} — skipping`);
-    return { mode: MODE, added: 0, skipped: 'no database' };
+    return { mode: mode(), added: 0, skipped: 'no database' };
   }
 
   const keys = ['videos', 'authors', 'texts', kind];
@@ -146,13 +266,13 @@ export async function registerVideos(archiveDir, kind, videos, log = console.log
   const changed = stats.newVideos + stats.newAuthors + stats.newInList + stats.newDownloaded;
   if (!changed) {
     log(`[db] ${kind}: already registered (${videos.length} checked)`);
-    return { mode: MODE, added: 0, ...stats };
+    return { mode: mode(), added: 0, ...stats };
   }
 
-  if (MODE !== 'write') {
+  if (mode() !== 'write') {
     log(`[db] DRY RUN ${kind}: would add ${stats.newVideos} videos, ${stats.newAuthors} authors, ` +
         `${stats.newInList} to list, ${stats.newDownloaded} to downloaded (set DB_UPDATE=write to apply)`);
-    return { mode: MODE, added: 0, ...stats };
+    return { mode: mode(), added: 0, ...stats };
   }
 
   const where = await backup(dir, keys);
@@ -162,7 +282,7 @@ export async function registerVideos(archiveDir, kind, videos, log = console.log
   }
   log(`[db] ${kind}: added ${stats.newVideos} videos, ${stats.newAuthors} authors, ` +
       `${stats.newInList} to list, ${stats.newDownloaded} to downloaded (backup: ${path.basename(where)})`);
-  return { mode: MODE, added: stats.newDownloaded, ...stats };
+  return { mode: mode(), added: stats.newDownloaded, ...stats };
 }
 
 // Ids already registered as downloaded. Falls back to files on disk when the
@@ -207,11 +327,12 @@ export async function auditIds(archiveDir, kind, ids) {
   return out;
 }
 
-// Replace the official list with TikTok's current one (in TikTok's order) and
+// Replace the official list with the site's current one (in the site's order) and
 // recompute what the viewer shows as "disappeared" (downloaded but no longer listed).
 // Refuses if the new list is suspiciously smaller than the old one.
 export async function refreshOfficialList(archiveDir, kind, ids, log = console.log) {
-  if (MODE === 'off') return { applied: false, reason: 'DB_UPDATE=off' };
+  if (mode() === 'off') return { applied: false, reason: 'DB_UPDATE=off' };
+  await bootstrapArchive(archiveDir, log);
   const dir = path.join(archiveDir, 'data', '.appdata');
   const db = await readDb(dir, kind);
   const back = zlib.gunzipSync(Buffer.from(encode(db, db.data).match(WRAPPER)[2], 'base64')).toString('utf8');
@@ -246,7 +367,7 @@ export async function refreshOfficialList(archiveDir, kind, ids, log = console.l
                        list.numDisappeared !== disappearedNow);
 
   if (!summary.changed) { log(`[db] ${kind}: official list unchanged (${newList.length})`); return { applied: false, reason: 'unchanged', ...summary }; }
-  if (MODE !== 'write') {
+  if (mode() !== 'write') {
     log(`[db] DRY RUN ${kind}: official list ${summary.before} → ${summary.after}, disappeared ${disappearedBefore} → ${disappearedNow} (set DB_UPDATE=write to apply)`);
     return { applied: false, reason: 'dry run', ...summary };
   }
@@ -265,7 +386,8 @@ export async function refreshOfficialList(archiveDir, kind, ids, log = console.l
 // Stamp the viewer's "Last run" for a list after a successful sync. A tiny write
 // (no backup, so routine runs don't push real backups out of the rotation).
 export async function touchLastRun(archiveDir, kind) {
-  if (MODE !== 'write') return false;
+  if (mode() !== 'write') return false;
+  await bootstrapArchive(archiveDir);
   const dir = path.join(archiveDir, 'data', '.appdata');
   const db = await readDb(dir, kind);
   const back = zlib.gunzipSync(Buffer.from(encode(db, db.data).match(WRAPPER)[2], 'base64')).toString('utf8');

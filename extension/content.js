@@ -1,4 +1,4 @@
-// ttpull content script — runs on tiktok.com
+// ttpull content script — runs on the site
 // Reads page context and exposes it as window.__TTPULL_CTX__ for the background
 // worker to collect via scripting.executeScript.
 
@@ -6,7 +6,7 @@
   'use strict';
 
   function extractCtx() {
-    // TikTok stores app state in window.__NEXT_DATA__ (Next.js) or SIGI_STATE
+    // The site stores app state in window.__NEXT_DATA__ (Next.js) or SIGI_STATE
     let uid = '', secUid = '', uniqueId = '', region = 'US', deviceId = '';
 
     try {
@@ -43,7 +43,7 @@
       }
     } catch { /* ignore */ }
 
-    // device_id — TikTok stores it in localStorage as several possible keys
+    // device_id — The site stores it in localStorage as several possible keys
     try {
       deviceId = localStorage.getItem('tt_device_id')
               || localStorage.getItem('device_id')
@@ -72,7 +72,7 @@
 
   publish();
 
-  // Re-publish after soft navigations (TikTok is a SPA)
+  // Re-publish after soft navigations (the site is a SPA)
   let lastUrl = location.href;
   new MutationObserver(() => {
     if (location.href !== lastUrl) {

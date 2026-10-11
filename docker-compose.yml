@@ -1,3 +1,6 @@
+# ttpull and kashibox share ONE archive folder: ttpull creates and updates it, kashibox reads it.
+# kashibox needs no viewer files (no Archive.html / app.js). With DB_UPDATE=write an empty folder
+# is set up automatically; existing files are never overwritten. See README.md.
 services:
   ttpull:
     image: ghcr.io/nullredvector/ttpull:latest
@@ -5,7 +8,7 @@ services:
     ports:
       - "3847:3847"
     volumes:
-      # Where videos and the viewer's database live (the archive folder)
+      # The archive folder (videos, covers and the database). Mount the same folder in kashibox.
       - ${ARCHIVE_DIR:-./archive}:/app/archive
       # Browser profile (keeps the login), session and retry state
       - ${STATE_DIR:-./state}:/data
@@ -19,7 +22,7 @@ services:
       # Push notifications (ntfy). Leave NTFY_URL empty to disable.
       - NTFY_URL=${NTFY_URL:-}
       - NTFY_TOKEN=${NTFY_TOKEN:-}
-      # Daily refresh of the viewer's official lists (videos TikTok removed). 'off' disables.
+      # Daily refresh of the viewer's official lists (videos the site removed). 'off' disables.
       - REFRESH_SCHEDULE=${REFRESH_SCHEDULE:-0 4 * * *}
       - NOTIFY_EVENTS=${NOTIFY_EVENTS:-login,failure,new,catchup,verify,gaveup,db}
       - HEALTHCHECK_URL=${HEALTHCHECK_URL:-}
