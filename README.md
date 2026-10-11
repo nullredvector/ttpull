@@ -97,6 +97,8 @@ archive/
     Favorites/{covers,videos}/<id>.jpg | <id>.mp4
 ```
 
+kashibox keeps its own files in `data/.appdata/` next to these (`stars.json`, `sessions.json`, `settings.json`, `watch.json`). ttpull never reads, writes or backs up those. ttpull also doesn't download or track the *Following* collection, so no `db_following.js` or `Following/` folder is created; kashibox treats them as optional.
+
 Each database file is `window.<name>_base64="<base64(gzip(JSON))>";` using the variable names `dbv_base64`, `dba_base64`, `dbvd_base64`, `db_base64` (likes) and `dbb_base64` (bookmarks). The format is the one the myfaveTT viewer uses, so existing archives keep working.
 
 - `officialList` is the site's current list, newest first. `downloaded` is what is in your archive.
