@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+<polygon points="23.50,1.40 24.97,4.58 28.45,4.99 25.88,7.37 26.56,10.81 23.50,9.10 20.44,10.81 21.12,7.37 18.55,4.99 22.03,4.58" fill="#ffe066" stroke="#ffe066" stroke-width="1.4" stroke-linejoin="round"/>
+<circle cx="21.6" cy="5.6" r=".7" fill="#fff8d6"/>
+<rect x="5" y="15.5" width="22" height="13" rx="3.6" fill="#ff9ec4"/>
+<rect x="3.4" y="11" width="25.2" height="6.6" rx="3.1" fill="#ffc2dc"/>
+<ellipse cx="10.6" cy="9.6" rx="3.1" ry="2.3" fill="#9be7d4" transform="rotate(-18 10.6 9.6)"/>
+<ellipse cx="16.2" cy="9.8" rx="3.1" ry="2.3" fill="#9be7d4" transform="rotate(18 16.2 9.8)"/>
+<circle cx="13.4" cy="10.7" r="1.7" fill="#6fd3bb"/>
+<circle cx="12.4" cy="22.4" r="1.15" fill="#5b3a4a"/>
+<circle cx="19.6" cy="22.4" r="1.15" fill="#5b3a4a"/>
+<path d="M14.5 24.3 Q16 25.9 17.5 24.3" fill="none" stroke="#5b3a4a" stroke-width="1.15" stroke-linecap="round"/>
+<circle cx="9.9" cy="24.4" r="1.7" fill="#ff6f9f" opacity=".55"/>
+<circle cx="22.1" cy="24.4" r="1.7" fill="#ff6f9f" opacity=".55"/>
+</svg>
