@@ -4,7 +4,7 @@ import cron from 'node-cron';
 import { runJob } from './downloader.js';
 import { runBrowserSync, runVerify } from './browser-sync.js';
 
-const SCHEDULE = process.env.CRON_SCHEDULE || '*/10 * * * *'; // default: every 10 minutes
+const SCHEDULE = process.env.CRON_SCHEDULE || '*/30 * * * *'; // default: every 30 minutes
 const JITTER_S = Number(process.env.SYNC_JITTER_SECONDS ?? 45);
 
 export function scheduleJobs(getSession) {

@@ -6,13 +6,13 @@
 
 <p align="center">The downloader that keeps your <b>kashibox</b> archive topped up, unattended.</p>
 
-ttpull watches your liked and bookmarked videos and, every few minutes, downloads anything new at the highest quality the site offers. It writes everything into a plain folder, and [kashibox](https://github.com/nullredvector/kashibox) (the player) reads that same folder.
+ttpull watches your liked and bookmarked videos and, every half hour, downloads anything new at the highest quality the site offers. It writes everything into a plain folder, and [kashibox](https://github.com/nullredvector/kashibox) (the player) reads that same folder.
 
 > Everything stays on your server. ttpull talks to the site you save videos on and to nothing else, apart from the optional notification and monitoring URLs you choose to set.
 
 ## Highlights
 
-- **Hands-off:** a real Chromium with a saved login runs inside the container and checks for new likes and bookmarks every 10 minutes.
+- **Hands-off:** a real Chromium with a saved login runs inside the container and checks for new likes and bookmarks every 30 minutes.
 - **Best quality:** picks the highest-bitrate file for every video, with no size limit. Downloads are streamed to disk and only kept if they are a valid video.
 - **Quick checks:** a routine run only looks at your newest videos and stops as soon as it reaches ones you already have, so most runs take seconds.
 - **Safe database writes:** every change to the archive's database is backed up first, checked, and written atomically. Creating a new archive never overwrites an existing file.
@@ -27,7 +27,7 @@ ttpull watches your liked and bookmarked videos and, every few minutes, download
  Your browser                          Your server
  ┌──────────────────┐   session    ┌──────────────────────────────────────────┐
  │ ttpull extension │ ───────────► │ ttpull container                          │
- │ (Push Session)   │   (cookies)  │   Chromium + saved login   every 10 min   │
+ │ (Push Session)   │   (cookies)  │   Chromium + saved login   every 30 min   │
  └──────────────────┘              │        │                                  │
                                    │        ▼  lists + downloads the new ones   │
                                    │   ┌──────────────────────────────┐        │
@@ -77,7 +77,7 @@ Then, once:
 4. Try a small run: `curl -X POST "http://your-server:3847/sync?test=1"` downloads your 2 newest videos from each list.
 5. Download your history: `curl -X POST "http://your-server:3847/sync?full=1"`. This can take hours for a big library. It works in chunks, so progress is saved as it goes.
 
-After that the 10-minute schedule runs on its own. The `/data` volume matters: without it the saved login is lost every time the container is recreated.
+After that the 30-minute schedule runs on its own. The `/data` volume matters: without it the saved login is lost every time the container is recreated.
 
 ## The archive folder
 
@@ -176,7 +176,7 @@ Messages carry counts, never usernames or captions (the one exception is a skipp
 | `ARCHIVE_DIR` | `./archive` | the archive folder (set to `/app/archive` in the container) |
 | `STATE_DIR` | `/data` (in the image) | browser profile, saved session, retry state |
 | `DB_UPDATE` | `dry` | `dry`, `write` or `off` (see Safety) |
-| `CRON_SCHEDULE` | `*/10 * * * *` | how often to check for new videos |
+| `CRON_SCHEDULE` | `*/30 * * * *` | how often to check for new videos |
 | `REFRESH_SCHEDULE` | `0 4 * * *` | daily list refresh; `off` disables it |
 | `SYNC_JITTER_SECONDS` | `45` | random delay before each run |
 | `MAX_PER_RUN` | `60` | most new videos per list on a routine run |
@@ -186,7 +186,7 @@ Messages carry counts, never usernames or captions (the one exception is a skipp
 | `NTFY_URL` / `NTFY_TOKEN` | empty | notifications (token only for a private server) |
 | `NOTIFY_EVENTS` | all of them | which events send a notification |
 | `HEALTHCHECK_URL` | empty | dead-man's-switch ping after each good sync |
-| `BLOCK_MEDIA` | on | the browser skips loading pictures and video it doesn't need; `0` turns it off |
+| `BLOCK_MEDIA` | on | the browser skips pictures, autoplay and sound (done with browser flags, so its cache keeps working); `0` turns it off |
 | `HEADLESS` | off | `1` runs the browser headless (headed under a virtual display is the default) |
 | `PORT` | `3847` | HTTP port |
 | `TZ` | | your timezone |
@@ -207,7 +207,7 @@ Messages carry counts, never usernames or captions (the one exception is a skipp
 ## Good to know
 
 - **Login:** ttpull seeds the container's browser from the cookies your extension pushes. If the site asks the container's browser to verify itself, or the login expires, you get a `login` notification, and `GET /debug/screenshot` shows what the browser sees. Push the session again to fix it.
-- **Traffic:** a routine run makes a handful of requests, a few times an hour, from a normal-looking browser. That is deliberately light, but it is still automation on your own account, so use it at your own discretion.
+- **Traffic:** each routine run opens the site's home page in a browser, which is most of the traffic, then fetches your two lists (2 requests). Measured over 10 runs, a run averages about 80 requests and 1.7 MB (typically about 40 requests and 0.3 MB, but about one load in three is heavier, up to roughly 200 requests and 6 MB). At every 30 minutes that is about 4,000 requests and 80 MB a day, plus the daily refresh (about 270 requests) and the downloads themselves. Those figures were measured logged out, so a real run may be somewhat higher. Every run logs its exact numbers (`[sync] network: …`) and `GET /status` shows the latest under `sync.network`. It is still automation on your own account, so use it at your own discretion, and raise `CRON_SCHEDULE` to a longer interval if you want it lighter.
 - **Disappeared** means "downloaded but no longer on your list". That includes videos you unliked yourself, not only ones a creator deleted.
 - **Updates:** with the Watchtower label, new images are picked up automatically. A restart during a run is safe: finished downloads are kept and registered on the next run.
 

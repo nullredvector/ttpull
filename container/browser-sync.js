@@ -31,6 +31,7 @@ export const syncState = {
   lastSummary: null,
   lastDiag: null,
   lastVerify: null,
+  network: null,
 };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -82,7 +83,13 @@ async function humanize(page, ms = 6000) {
 
 async function launchContext() {
   await fs.mkdir(PROFILE_DIR, { recursive: true });
-  const context = await chromium.launchPersistentContext(PROFILE_DIR, {
+  // Skip pictures, autoplay and sound with browser flags. Do NOT use request interception for this:
+  // interception turns off Chrome's HTTP cache, which made every run re-download the whole page
+  // (about 300 requests and 7 MB instead of about 30 requests and 0.2 MB once cached).
+  const lean = BLOCK_MEDIA
+    ? ['--blink-settings=imagesEnabled=false', '--autoplay-policy=user-gesture-required', '--mute-audio']
+    : [];
+  return chromium.launchPersistentContext(PROFILE_DIR, {
     headless: HEADLESS,
     viewport: { width: 1280, height: 900 },
     locale: 'en-US',
@@ -91,15 +98,23 @@ async function launchContext() {
       '--no-sandbox',
       '--disable-dev-shm-usage',
       '--disable-blink-features=AutomationControlled',
+      ...lean,
     ],
   });
-  if (BLOCK_MEDIA) {
-    await context.route('**/*', route => {
-      const t = route.request().resourceType();
-      return (t === 'media' || t === 'image' || t === 'font') ? route.abort() : route.continue();
-    });
-  }
-  return context;
+}
+
+// Counts what the browser really sends during a run, so the traffic can be checked from /status and the log.
+async function trackNetwork(context, page) {
+  const t = { sent: 0, wire: 0, cache: 0, post: 0, bytes: 0, started: Date.now() };
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Network.enable');
+  cdp.on('Network.requestWillBeSent', e => { t.sent++; if (e.request?.method === 'POST') t.post++; });
+  cdp.on('Network.requestServedFromCache', () => { t.cache++; });
+  cdp.on('Network.loadingFinished', e => { if (e.encodedDataLength > 0) { t.wire++; t.bytes += e.encodedDataLength; } });
+  return () => ({
+    requests: t.sent, onTheWire: t.wire, fromCache: t.cache, posts: t.post,
+    megabytes: +(t.bytes / 1e6).toFixed(2), seconds: Math.round((Date.now() - t.started) / 1000),
+  });
 }
 
 // A first page with no items is not a real result (a library with likes always
@@ -207,12 +222,13 @@ export async function runBrowserSync(getSession, opts = {}) {
   syncState.lastError = null;
   syncState.phase = 'starting browser';
   const started = Date.now();
-  let context;
+  let context, endTally;
 
   try {
     context = await launchContext();
 
     const page = context.pages()[0] || await context.newPage();
+    endTally = await trackNetwork(context, page);
 
     // Seed the login from the extension's pushed cookies if the profile has none.
     const session = getSession();
@@ -318,6 +334,11 @@ export async function runBrowserSync(getSession, opts = {}) {
     await onSyncFailure(e.message, opts).catch(() => {});
     try { await context?.pages()?.[0]?.screenshot({ path: SHOT_FILE }); } catch {}
   } finally {
+    if (endTally) {
+      const n = endTally();
+      syncState.network = n;
+      console.log(`[sync] network: ${n.onTheWire} requests on the wire (${n.requests} sent, ${n.fromCache} from cache), ${n.megabytes} MB, ${n.posts} POSTs, ${n.seconds}s`);
+    }
     syncState.running = false;
     syncState.phase = null;
     await context?.close().catch(() => {});
