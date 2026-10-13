@@ -109,7 +109,7 @@ $('job-status-btn').addEventListener('click', async () => {
 
 $('run-now-btn').addEventListener('click', async () => {
   const s = await getSettings();
-  setStatus('fetching video lists from browser…');
+  setStatus('asking the container to sync…');
   chrome.runtime.sendMessage({ type: 'run_now', testMode: s.testMode }, async () => {
     const updated = await getSettings();
     setStatus(updated.lastStatus);
