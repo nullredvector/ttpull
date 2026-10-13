@@ -12,7 +12,7 @@ ttpull watches your liked and bookmarked videos and, every half hour, downloads 
 
 ## Highlights
 
-- **Hands-off:** a real Chromium with a saved login runs inside the container and checks for new likes and bookmarks every 30 minutes.
+- **Hands-off:** a real Chromium with a saved login runs inside the container and checks for new likes and bookmarks every 30 minutes by default. You change how often from kashibox's Settings page.
 - **Best quality:** picks the highest-bitrate file for every video, with no size limit. Downloads are streamed to disk and only kept if they are a valid video.
 - **Quick checks:** a routine run only looks at your newest videos and stops as soon as it reaches ones you already have, so most runs take seconds.
 - **Safe database writes:** every change to the archive's database is backed up first, checked, and written atomically. Creating a new archive never overwrites an existing file.
@@ -77,7 +77,7 @@ Then, once:
 4. Try a small run: `curl -X POST "http://your-server:3847/sync?test=1"` downloads your 2 newest videos from each list.
 5. Download your history: `curl -X POST "http://your-server:3847/sync?full=1"`. This can take hours for a big library. It works in chunks, so progress is saved as it goes.
 
-After that the 30-minute schedule runs on its own. The `/data` volume matters: without it the saved login is lost every time the container is recreated.
+After that it checks on its own (every 30 minutes unless you change it). The `/data` volume matters: without it the saved login is lost every time the container is recreated.
 
 ## The archive folder
 
@@ -147,6 +147,21 @@ Before changing a file, ttpull must be able to decode it and re-encode it to ide
 
 A daily run at 04:00 does the refresh for you and only notifies you if something has changed.
 
+## Check interval
+
+How often ttpull looks for new videos is a setting, not a deployment option. Change it from **kashibox's Settings page** (Downloader), or directly:
+
+```bash
+curl -X POST http://your-server:3847/settings -H 'Content-Type: application/json' -d '{"syncIntervalMinutes": 45}'
+```
+
+- **Default:** 30 minutes. **Allowed:** a whole number from 10 to 1440 (once a day), or `0` to pause the routine checks.
+- It takes effect straight away and is remembered across restarts and updates (it is stored in the `/data` volume).
+- A value you save beats `SYNC_INTERVAL_MINUTES`, which only supplies the starting value.
+- The next check always waits the full interval since the last one started, so restarting the container or changing the setting doesn't trigger a burst of checks.
+- Longer is gentler on your account: each check opens a browser and makes some requests (see *Traffic* below). The daily list refresh at 04:00 and manual runs (`POST /sync`) are separate and unaffected.
+- `GET /settings` and `GET /status` (under `schedule`) show the current interval and when the next check is due.
+
 ## Notifications
 
 Set `NTFY_URL` to a topic on [ntfy](https://ntfy.sh) (or your own server) and install the ntfy app on your phone.
@@ -176,7 +191,7 @@ Messages carry counts, never usernames or captions (the one exception is a skipp
 | `ARCHIVE_DIR` | `./archive` | the archive folder (set to `/app/archive` in the container) |
 | `STATE_DIR` | `/data` (in the image) | browser profile, saved session, retry state |
 | `DB_UPDATE` | `dry` | `dry`, `write` or `off` (see Safety) |
-| `CRON_SCHEDULE` | `*/30 * * * *` | how often to check for new videos |
+| `SYNC_INTERVAL_MINUTES` | `30` | the starting check interval in minutes, used only until you save one from kashibox's Settings page (`0` pauses). The old `CRON_SCHEDULE` is no longer used |
 | `REFRESH_SCHEDULE` | `0 4 * * *` | daily list refresh; `off` disables it |
 | `SYNC_JITTER_SECONDS` | `45` | random delay before each run |
 | `MAX_PER_RUN` | `60` | most new videos per list on a routine run |
@@ -195,9 +210,10 @@ Messages carry counts, never usernames or captions (the one exception is a skipp
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /status` | session, run state and the last sync summary |
+| `GET /status` | session, run state, the last sync summary and the schedule |
 | `GET /logs` | the latest log lines |
 | `GET /archive/status` | counts and last write time (see above) |
+| `GET /settings`, `POST /settings` | the check interval (see below) |
 | `POST /sync[?test=1\|full=1]` | run a sync now |
 | `POST /verify[?refresh=1]`, `GET /verify` | check the archive against the site's lists |
 | `POST /session` | used by the extension to push your login |
@@ -207,7 +223,7 @@ Messages carry counts, never usernames or captions (the one exception is a skipp
 ## Good to know
 
 - **Login:** ttpull seeds the container's browser from the cookies your extension pushes. If the site asks the container's browser to verify itself, or the login expires, you get a `login` notification, and `GET /debug/screenshot` shows what the browser sees. Push the session again to fix it.
-- **Traffic:** each routine run opens the site's home page in a browser, which is most of the traffic, then fetches your two lists (2 requests). Measured over 10 runs, a run averages about 80 requests and 1.7 MB (typically about 40 requests and 0.3 MB, but about one load in three is heavier, up to roughly 200 requests and 6 MB). At every 30 minutes that is about 4,000 requests and 80 MB a day, plus the daily refresh (about 270 requests) and the downloads themselves. Those figures were measured logged out, so a real run may be somewhat higher. Every run logs its exact numbers (`[sync] network: …`) and `GET /status` shows the latest under `sync.network`. It is still automation on your own account, so use it at your own discretion, and raise `CRON_SCHEDULE` to a longer interval if you want it lighter.
+- **Traffic:** each routine run opens the site's home page in a browser, which is most of the traffic, then fetches your two lists (2 requests). Measured over 10 runs, a run averages about 80 requests and 1.7 MB (typically about 40 requests and 0.3 MB, but about one load in three is heavier, up to roughly 200 requests and 6 MB). At every 30 minutes that is about 4,000 requests and 80 MB a day, plus the daily refresh (about 270 requests) and the downloads themselves. Those figures were measured logged out, so a real run may be somewhat higher. Every run logs its exact numbers (`[sync] network: …`) and `GET /status` shows the latest under `sync.network`. It is still automation on your own account, so use it at your own discretion, and set a longer check interval on kashibox's Settings page if you want it lighter.
 - **Disappeared** means "downloaded but no longer on your list". That includes videos you unliked yourself, not only ones a creator deleted.
 - **Updates:** with the Watchtower label, new images are picked up automatically. A restart during a run is safe: finished downloads are kept and registered on the next run.
 

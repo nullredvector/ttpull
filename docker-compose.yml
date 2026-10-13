@@ -15,7 +15,9 @@ services:
     shm_size: 1gb            # Chromium needs more than Docker's 64MB default
     environment:
       - ARCHIVE_DIR=/app/archive
-      - CRON_SCHEDULE=${CRON_SCHEDULE:-*/30 * * * *}
+      # Starting check interval in minutes (default 30; 0 pauses). Change it any time from kashibox's
+      # Settings page; a saved value wins over this one.
+      - SYNC_INTERVAL_MINUTES=${SYNC_INTERVAL_MINUTES:-}
       # off | dry (log only) | write (update the archive viewer's database)
       - DB_UPDATE=${DB_UPDATE:-dry}
       - TZ=${TZ:-America/New_York}

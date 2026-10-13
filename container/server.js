@@ -5,7 +5,8 @@ import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { scheduleJobs, runNow } from './scheduler.js';
+import { scheduleJobs, runNow, rescheduleSync, getNextRunAt } from './scheduler.js';
+import { validateInterval, setSyncInterval, describeSettings } from './settings.js';
 import { getJobState } from './downloader.js';
 import { STATE_DIR, clearAllFailures, getFlag, setFlag } from './state.js';
 import { notify, notificationsEnabled } from './notify.js';
@@ -21,7 +22,7 @@ app.use(express.json({ limit: '50mb' }));
 // Allow extension (chrome-extension://*) and localhost origins
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
   next();
@@ -72,6 +73,7 @@ app.get('/status', (req, res) => {
     running: job.running || syncState.running,
     phase: job.running ? job.phase : (syncState.phase || job.phase),
     sync: syncState,
+    schedule: describeSettings(getNextRunAt()),
   });
 });
 
@@ -110,6 +112,24 @@ app.post('/videos', async (req, res) => {
     message: `downloading ${(likes || []).length} likes + ${(bookmarks || []).length} bookmarks`,
   });
 });
+
+// GET /settings — the user-changeable settings. POST (or PUT) /settings { "syncIntervalMinutes": 30 }
+// changes how often the routine sync runs: 0 pauses it, otherwise a whole number of minutes.
+// Takes effect immediately and is kept across restarts.
+app.get('/settings', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(describeSettings(getNextRunAt()));
+});
+const saveSettings = async (req, res) => {
+  const v = validateInterval(req.body?.syncIntervalMinutes);
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  await setSyncInterval(v.value);
+  console.log(`[settings] check interval set to ${v.value === 0 ? 'paused' : v.value + ' min'}`);
+  rescheduleSync();
+  res.json(describeSettings(getNextRunAt()));
+};
+app.post('/settings', saveSettings);
+app.put('/settings', saveSettings);
 
 // GET /archive/status — whether the archive's database exists, and how much is in it.
 // Counts only (no ids, names or captions), so a player can show a "nothing downloaded yet" state.
