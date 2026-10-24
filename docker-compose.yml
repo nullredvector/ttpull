@@ -28,6 +28,11 @@ services:
       - REFRESH_SCHEDULE=${REFRESH_SCHEDULE:-0 4 * * *}
       - NOTIFY_EVENTS=${NOTIFY_EVENTS:-login,failure,new,catchup,verify,gaveup,db}
       - HEALTHCHECK_URL=${HEALTHCHECK_URL:-}
+      # The scout (For You picks): OFF unless SCOUT=on here AND the switch in kashibox's Settings is on.
+      # It only looks, never likes anything. SCOUT_DRY=1 logs what it would do and writes nothing.
+      - SCOUT=${SCOUT:-off}
+      - SCOUT_DRY=${SCOUT_DRY:-}
+      - SCORER_URL=${SCORER_URL:-http://autotagtt:8090}
       # Max new videos per list on a scheduled run (POST /sync?full=1 ignores it)
       - MAX_PER_RUN=${MAX_PER_RUN:-60}
     labels:

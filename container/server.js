@@ -10,6 +10,7 @@ import { validateInterval, setSyncInterval, describeSettings } from './settings.
 import { getJobState } from './downloader.js';
 import { STATE_DIR, clearAllFailures, getFlag, setFlag } from './state.js';
 import { notify, notificationsEnabled } from './notify.js';
+import { startScout, scoutStatus } from './scout.js';
 import { bootstrapArchive, archiveStatus } from './archive-db.js';
 import { runBrowserSync, runProbe, runVerify, syncState, screenshotPath } from './browser-sync.js';
 
@@ -74,6 +75,7 @@ app.get('/status', (req, res) => {
     phase: job.running ? job.phase : (syncState.phase || job.phase),
     sync: syncState,
     schedule: describeSettings(getNextRunAt()),
+    scout: scoutStatus(),
   });
 });
 
@@ -260,4 +262,5 @@ if (!getFlag('sizeCapRemoved')) {
 app.listen(PORT, () => {
   console.log(`[server] listening on :${PORT}`);
   scheduleJobs(() => session);
+  startScout(() => session);   // does nothing unless SCOUT=on and the Settings switch is on
 });

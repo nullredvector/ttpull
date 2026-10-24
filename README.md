@@ -162,6 +162,33 @@ curl -X POST http://your-server:3847/settings -H 'Content-Type: application/json
 - Longer is gentler on your account: each check opens a browser and makes some requests (see *Traffic* below). The daily list refresh at 04:00 and manual runs (`POST /sync`) are separate and unaffected.
 - `GET /settings` and `GET /status` (under `schedule`) show the current interval and when the next check is due.
 
+## The scout (For You picks)
+
+An optional extra that is **off unless you switch it on**. The scout looks through the site's For You feed at a human pace, sends each video's cover to the scorer (autotagTT), and writes the best matches into the archive as *suggestions*. You open and like them yourself in kashibox (Review → For You picks).
+
+**It only looks.** It never likes, unlikes, follows, comments, shares, saves or posts. It has no auto-like mode, and the browser refuses the site's write endpoints as a safety net. It never tries to get past a verification screen: if one appears (or a log-in prompt, an error, or any unexpected dialog) it stops, tells you, and stays stopped for at least 6 hours, or until you switch it off and on again. There are no stealth tools of any kind.
+
+**Two switches, both needed.** `SCOUT=on` in the container's environment (a hard kill switch, off by default) *and* **Settings → For You picks** in kashibox (it writes `scoutEnabled` into `settings.json`). With `SCOUT` off, an archive is left exactly as it is.
+
+| Setting (in kashibox's Settings) | Default | Meaning |
+| --- | --- | --- |
+| `scoutEnabled` | off | the scout does nothing unless this is on |
+| `scoutDaily` | 100 | most videos it may look at per day (0 pauses it) |
+| `scoutMin` | 60 | lowest score, in percent, worth suggesting |
+| `scoutFrom`, `scoutTo` | 0, 23 | only look in these local hours (inclusive; from > to wraps past midnight) |
+
+It reads these every minute, so changes apply within a minute. It works in sessions of about 15 to 20 minutes with 30 to 90 minutes of rest between them, pauses 3 to 12 seconds between videos, never runs at the same time as the likes sync (the sync always wins; they share one browser), and stops collecting while 200 or more picks are waiting for you.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SCOUT` | `off` | `on` allows it (the hard switch) |
+| `SCOUT_DRY` | | `1`: runs the whole loop and logs what it *would* do, writes nothing to the archive, and still obeys every limit |
+| `SCORER_URL` | `http://autotagtt:8090` | the scorer (`POST /score?id=<id>` with the cover) |
+
+**Try it safely first:** `SCOUT=on` with `SCOUT_DRY=1`, switch it on in kashibox's Settings, and read the `[scout]` lines in `GET /logs`.
+
+What it writes, all under `data/.appdata/scout/` (it writes nowhere else in the archive and never touches the database files): `candidates.jsonl`, `covers/<id>.jpg` (the cover image only, never the video; written before its line) and `status.json`. Its own memory (videos already seen, today's counters, a stop) is kept in the state folder, not the archive. Logs and notifications never contain ids, names, captions, addresses or tag names. `GET /status` shows its state under `scout`. A stop sends a notification (event `scout`, or `login` for a log-in prompt).
+
 ## Notifications
 
 Set `NTFY_URL` to a topic on [ntfy](https://ntfy.sh) (or your own server) and install the ntfy app on your phone.
@@ -180,6 +207,7 @@ On the public server, the topic name works like a password, so make it long and 
 | `catchup` | A full catch-up finished. |
 | `verify` | A verify or the daily refresh found something. |
 | `gaveup` | A video failed to download three times and is being skipped. |
+| `scout` | The scout stopped (verification screen, error). A log-in prompt uses `login`. |
 | `db` | A database update failed. |
 
 Messages carry counts, never usernames or captions (the one exception is a skipped-video alert, which names the video by its numeric id). Pick events with `NOTIFY_EVENTS` (comma-separated). `HEALTHCHECK_URL` is pinged after each good sync, which pairs with a dead-man's-switch service to tell you if the container itself stops.
@@ -200,6 +228,7 @@ Messages carry counts, never usernames or captions (the one exception is a skipp
 | `MAX_PAGES` | `400` | most list pages fetched in one pass |
 | `NTFY_URL` / `NTFY_TOKEN` | empty | notifications (token only for a private server) |
 | `NOTIFY_EVENTS` | all of them | which events send a notification |
+| `SCOUT`, `SCOUT_DRY`, `SCORER_URL` | `off`, empty, autotagTT | the optional scout (see above) |
 | `HEALTHCHECK_URL` | empty | dead-man's-switch ping after each good sync |
 | `BLOCK_MEDIA` | on | the browser skips pictures, autoplay and sound (done with browser flags, so its cache keeps working); `0` turns it off |
 | `HEADLESS` | off | `1` runs the browser headless (headed under a virtual display is the default) |

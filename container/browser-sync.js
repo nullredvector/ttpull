@@ -10,6 +10,7 @@ import { notify, heartbeat } from './notify.js';
 import { readKnownIds, auditIds, refreshOfficialList, touchLastRun } from './archive-db.js';
 import { downloadVideos, getJobState } from './downloader.js';
 import { listInPage, envInPage } from './page-fetch.js';
+import { acquireBrowser, releaseBrowser } from './browser-lock.js';
 
 const ARCHIVE_DIR  = process.env.ARCHIVE_DIR || './archive';
 const PROFILE_DIR  = path.join(STATE_DIR, 'profile');
@@ -36,7 +37,7 @@ export const syncState = {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-function toPlaywrightCookie(c) {
+export function toPlaywrightCookie(c) {
   const sameSite = { no_restriction: 'None', lax: 'Lax', strict: 'Strict' }[c.sameSite];
   const out = {
     name: c.name,
@@ -51,7 +52,7 @@ function toPlaywrightCookie(c) {
   return out;
 }
 
-async function isLoggedIn(context) {
+export async function isLoggedIn(context) {
   const cookies = await context.cookies('https://www.tiktok.com');
   return cookies.some(c => c.name === 'sessionid' && c.value);
 }
@@ -81,7 +82,7 @@ async function humanize(page, ms = 6000) {
   }
 }
 
-async function launchContext() {
+export async function launchContext() {
   await fs.mkdir(PROFILE_DIR, { recursive: true });
   // Skip pictures, autoplay and sound with browser flags. Do NOT use request interception for this:
   // interception turns off Chrome's HTTP cache, which made every run re-download the whole page
@@ -137,6 +138,7 @@ async function listWithRetry(page, args, label) {
 export async function runProbe(getSession) {
   const out = { steps: [] };
   let context;
+  if (!(await acquireBrowser('probe', { waitMs: 60000 }))) return { error: 'the browser is busy' };
   try {
     context = await launchContext();
     const page = context.pages()[0] || await context.newPage();
@@ -160,6 +162,7 @@ export async function runProbe(getSession) {
   } catch (e) {
     out.error = e.message;
   } finally {
+    releaseBrowser('probe');
     await context?.close().catch(() => {});
   }
   return out;
@@ -220,9 +223,18 @@ export async function runBrowserSync(getSession, opts = {}) {
   }
   syncState.running = true;
   syncState.lastError = null;
-  syncState.phase = 'starting browser';
+  syncState.phase = 'waiting for the browser';
   const started = Date.now();
   let context, endTally;
+
+  // the scout may be using the browser: ask it to wrap up, and give it a few minutes
+  if (!(await acquireBrowser('sync', { waitMs: 180000 }))) {
+    console.log('[sync] the browser is busy — skipping this check');
+    syncState.running = false;
+    syncState.phase = null;
+    return { skipped: true };
+  }
+  syncState.phase = 'starting browser';
 
   try {
     context = await launchContext();
@@ -339,6 +351,7 @@ export async function runBrowserSync(getSession, opts = {}) {
       syncState.network = n;
       console.log(`[sync] network: ${n.onTheWire} requests on the wire (${n.requests} sent, ${n.fromCache} from cache), ${n.megabytes} MB, ${n.posts} POSTs, ${n.seconds}s`);
     }
+    releaseBrowser('sync');
     syncState.running = false;
     syncState.phase = null;
     await context?.close().catch(() => {});
@@ -353,9 +366,16 @@ export async function runBrowserSync(getSession, opts = {}) {
 export async function runVerify(getSession, opts = {}) {
   if (syncState.running || getJobState().running) return { skipped: true };
   syncState.running = true;
-  syncState.phase = 'verifying';
+  syncState.phase = 'waiting for the browser';
   syncState.lastVerify = { running: true, startedAt: new Date().toISOString() };
   let context;
+  if (!(await acquireBrowser('verify', { waitMs: 180000 }))) {
+    syncState.running = false;
+    syncState.phase = null;
+    syncState.lastVerify = { error: 'the browser was busy', at: new Date().toISOString() };
+    return syncState.lastVerify;
+  }
+  syncState.phase = 'verifying';
   try {
     context = await launchContext();
     const page = context.pages()[0] || await context.newPage();
@@ -433,6 +453,7 @@ export async function runVerify(getSession, opts = {}) {
     syncState.lastVerify = { error: e.message, at: new Date().toISOString() };
     console.error('[verify] failed:', e.message);
   } finally {
+    releaseBrowser('verify');
     syncState.running = false;
     syncState.phase = null;
     await context?.close().catch(() => {});

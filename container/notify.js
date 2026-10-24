@@ -3,12 +3,12 @@
 //
 //   NTFY_URL       e.g. https://ntfy.sh/ttpull-<long-random-string>
 //   NTFY_TOKEN     optional access token (self-hosted with auth)
-//   NOTIFY_EVENTS  comma list: login,failure,new,catchup,verify,gaveup,db
+//   NOTIFY_EVENTS  comma list: login,failure,new,catchup,verify,gaveup,db,scout
 //   HEALTHCHECK_URL optional dead-man's-switch URL, pinged after each good sync
 
 const NTFY_URL  = process.env.NTFY_URL || '';
 const NTFY_TOKEN = process.env.NTFY_TOKEN || '';
-const EVENTS = new Set((process.env.NOTIFY_EVENTS || 'login,failure,new,catchup,verify,gaveup,db')
+const EVENTS = new Set((process.env.NOTIFY_EVENTS || 'login,failure,new,catchup,verify,gaveup,db,scout')
   .split(',').map(s => s.trim()).filter(Boolean));
 
 const recent = new Map();
