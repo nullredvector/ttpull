@@ -29,6 +29,7 @@ export const LIMITS = {
   LONG_PAUSE_CHANCE: 0.1,           // now and then a longer pause
   LONG_PAUSE_MS: [15000, 40000],
   STOP_MS: 6 * 3600 * 1000,         // after a challenge, a login prompt or an error it stays stopped this long
+  FEED_STOP_MS: 3600 * 1000,        // the feed merely failing to load is not a warning sign: it tries again after this long
   COVER_MAX_BYTES: 1_000_000,
   KEEP_CANDIDATES: 5000,
   TRIM_AT: 5500,
@@ -42,7 +43,7 @@ export const LIMITS = {
 
 // Thrown by the feed (or the core) to stop the whole run: state is 'challenge', 'login' or 'error'.
 export class ScoutStop extends Error {
-  constructor(state, message) { super(message); this.state = state; }
+  constructor(state, message, stopMs) { super(message); this.state = state; this.stopMs = stopMs; }
 }
 // One failed feed load. Three in a row stop the run.
 export class FeedHiccup extends Error {}
@@ -233,15 +234,16 @@ export function createScout(deps) {
     try { await store.writeStatus(lastStatus, { onlyIfExists }); } catch (e) { log(`could not write status.json: ${e.message}`); }
   }
 
-  async function stop(state, message) {
-    st.stopped = { until: now() + LIMITS.STOP_MS, state, message };
+  async function stop(state, message, stopMs = LIMITS.STOP_MS) {
+    const hours = stopMs >= 3600 * 1000 * 1.5 ? `${Math.round(stopMs / 3600000)} hours` : 'an hour';
+    st.stopped = { until: now() + stopMs, state, message };
     st.nextSessionAt = 0;
     log(`stopped (${state}): ${message}`);
     await setStatus(state, message, true);
     await save();
     try {
       if (state === 'login') await notify('login', 'ttpull: the scout needs you to log in', 'The site shows a log-in prompt, so the scout stopped. Push a fresh session from the extension.', { priority: 4, tags: ['key'], dedupeKey: 'scout-login', dedupeMs: LIMITS.STOP_MS });
-      else await notify('scout', state === 'challenge' ? 'ttpull: the scout stopped (verification screen)' : 'ttpull: the scout stopped', `${message} It will stay stopped for 6 hours. Nothing was clicked or liked.`, { priority: 4, tags: ['stop_sign'], dedupeKey: 'scout-stop', dedupeMs: LIMITS.STOP_MS });
+      else await notify('scout', state === 'challenge' ? 'ttpull: the scout stopped (verification screen)' : 'ttpull: the scout stopped', `${message} It will stay stopped for ${hours}. Nothing was clicked or liked.`, { priority: 4, tags: ['stop_sign'], dedupeKey: 'scout-stop', dedupeMs: stopMs });
     } catch { /* a notification problem must not matter */ }
   }
 
@@ -309,7 +311,8 @@ export function createScout(deps) {
         } catch (e) {
           if (e instanceof ScoutStop) throw e;
           if (e instanceof FeedHiccup) {
-            if (++feedFails >= LIMITS.FEED_FAILS) throw new ScoutStop('error', 'The feed would not load three times in a row.');
+            log(`the feed did not load (${feedFails + 1} of ${LIMITS.FEED_FAILS}): ${String(e.message || e).slice(0, 100)}`);
+            if (++feedFails >= LIMITS.FEED_FAILS) throw new ScoutStop('error', `The feed would not load three times in a row (${String(e.message || e).slice(0, 80)}).`, LIMITS.FEED_STOP_MS);
             await sleep(rand([4000, 9000]));
             continue;
           }
@@ -336,7 +339,7 @@ export function createScout(deps) {
       st.nextSessionAt = now() + rand(LIMITS.REST_S) * 1000;
       if (lastStatus && lastStatus.state === 'running') await setStatus('idle', 'Resting between sessions.', true);
     } catch (e) {
-      if (e instanceof ScoutStop) await stop(e.state, e.message);
+      if (e instanceof ScoutStop) await stop(e.state, e.message, e.stopMs);
       else if (e instanceof ScorerDown) await stop('error', 'The scorer is not answering.');
       else await stop('error', `Something went wrong: ${String(e.message || e).slice(0, 120)}`);
     } finally {

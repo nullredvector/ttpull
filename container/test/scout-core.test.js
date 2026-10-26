@@ -344,6 +344,15 @@ test('the feed failing to load three times in a row stops it; two failures do no
   const st = await readStatus(three);
   assert.equal(st.state, 'error');
   assert.match(st.message, /three times/);
+  assert.match(st.message, /nothing loaded/, 'the reason is part of the message');
+  assert.ok(three.logs.some(l => /did not load.*nothing loaded/.test(l)), 'each failed load is logged with its reason');
+  assert.match(three.notices.find(n => n.event === 'scout').message, /an hour/);
+
+  // a feed that merely would not load is retried after an hour, not six
+  three.clock.t += 59 * 60e3;
+  assert.equal(await three.scout.cycle(), 'stopped', 'still stopped after 59 min');
+  three.clock.t += 2 * 60e3;
+  assert.equal(await three.scout.cycle(), 'session', 'tries again after an hour');
 
   const two = await setup({ settings: { ...ON, scoutDaily: 12 }, feed: fakeFeed(i => ((i === 3 || i === 4 || i === 9 || i === 10) ? new FeedHiccup('blip') : defaultItem(i))) });
   await two.scout.cycle();
