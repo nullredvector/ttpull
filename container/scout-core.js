@@ -228,7 +228,9 @@ export function createScout(deps) {
     const t = now();
     const same = lastStatus && lastStatus.state === state && lastStatus.message === message;
     if (same && !force && (state === 'off' || t - lastStatusAt < LIMITS.STATUS_EVERY_MS)) return;
-    lastStatus = { state, updated: t, message, today: { date: st.today.date, viewed: st.today.viewed, collected: st.today.collected } };
+    // next: when it will look again (after a rest, or when a stop ends), so the page can show a countdown
+    const next = st.stopped ? st.stopped.until : (st.nextSessionAt > t ? st.nextSessionAt : 0);
+    lastStatus = { state, updated: t, message, ...(next && state !== 'running' && state !== 'off' ? { next } : {}), today: { date: st.today.date, viewed: st.today.viewed, collected: st.today.collected } };
     lastStatusAt = t;
     if (dry) { log(`(dry run) status: ${state}${message ? ' — ' + message : ''}`); return; }
     try { await store.writeStatus(lastStatus, { onlyIfExists }); } catch (e) { log(`could not write status.json: ${e.message}`); }

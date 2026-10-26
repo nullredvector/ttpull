@@ -538,13 +538,29 @@ test('status.json has the contract shape, is written atomically, and tracks the 
   const c = await setup({ settings: { ...ON, scoutDaily: 6 } });
   await c.scout.cycle();
   const st = await readStatus(c);
-  assert.deepEqual(Object.keys(st).sort(), ['message', 'state', 'today', 'updated']);
+  assert.deepEqual(Object.keys(st).filter(k => k !== 'next').sort(), ['message', 'state', 'today', 'updated']);   // next (when it looks again) is optional
   assert.deepEqual(Object.keys(st.today).sort(), ['collected', 'date', 'viewed']);
   assert.ok(['off', 'idle', 'running', 'paused', 'challenge', 'login', 'error'].includes(st.state));
   assert.equal(st.today.date, localDate(c.clock.t));
   assert.equal(st.today.viewed, 6);
   assert.ok(Number.isFinite(st.updated));
   assert.deepEqual((await fs.readdir(path.join(c.ad, 'scout'))).filter(f => f.endsWith('.tmp')), []);
+});
+
+test('while it rests, status.json says when the next session starts; a stop says when it ends', async () => {
+  const c = await setup({ settings: { ...ON, scoutDaily: 5000 }, random: seeded(5) });
+  await c.scout.cycle();
+  assert.equal(await c.scout.cycle(), 'resting');
+  const st = await readStatus(c);
+  assert.equal(st.state, 'idle');
+  assert.equal(st.next, c.scout.state().nextSessionAt);
+  assert.ok(st.next > st.updated);
+
+  const stopped = await setup({ settings: ON, feed: fakeFeed(i => (i >= 1 ? new FeedHiccup('nothing loaded') : defaultItem(i))) });
+  await stopped.scout.cycle();
+  const s2 = await readStatus(stopped);
+  assert.equal(s2.state, 'error');
+  assert.equal(s2.next, stopped.scout.state().stopped.until);
 });
 
 test('the candidates file is trimmed to the newest 5000 lines with a temp file and a rename', async () => {
