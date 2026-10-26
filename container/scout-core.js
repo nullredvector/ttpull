@@ -24,7 +24,7 @@ export const DEFAULTS = { scoutEnabled: false, scoutDaily: 100, scoutMin: 60, sc
 export const LIMITS = {
   PENDING_MAX: 200,                 // this many unanswered suggestions and the scout stops collecting
   SESSION_S: [900, 1200],           // a session lasts 15-20 minutes
-  REST_S: [1800, 5400],             // then it rests 30-90 minutes
+  REST_S: [60, 600],                // then it rests 1-10 minutes
   PAUSE_MS: [3000, 12000],          // between videos
   LONG_PAUSE_CHANCE: 0.1,           // now and then a longer pause
   LONG_PAUSE_MS: [15000, 40000],
