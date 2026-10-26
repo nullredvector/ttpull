@@ -476,14 +476,14 @@ test('it paces itself: 3 to 12 seconds between videos, never a regular rhythm', 
   assert.ok(pauses.some(ms => ms > 12000), 'now and then a longer pause');
 });
 
-test('a session lasts about 15 to 20 minutes, then it rests 30 to 90 minutes', async () => {
+test('a session lasts about 15 to 20 minutes, then it rests 1 to 10 minutes', async () => {
   const c = await setup({ settings: { ...ON, scoutDaily: 5000 }, random: seeded(5) });
   const t0 = c.clock.t;
   await c.scout.cycle();
   const lasted = (c.clock.t - t0) / 60000;
   assert.ok(lasted >= 15 && lasted <= 21, `session lasted ${lasted.toFixed(1)} min`);
   const rest = (c.scout.state().nextSessionAt - c.clock.t) / 60000;
-  assert.ok(rest >= 29 && rest <= 91, `rests ${rest.toFixed(0)} min`);
+  assert.ok(rest >= 0.9 && rest <= 10.1, `rests ${rest.toFixed(0)} min`);
   assert.equal(await c.scout.cycle(), 'resting');
   assert.equal(c.feed.opened, 1);
   c.clock.t = c.scout.state().nextSessionAt + 1;

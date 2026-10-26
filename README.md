@@ -177,7 +177,7 @@ An optional extra that is **off unless you switch it on**. The scout looks throu
 | `scoutMin` | 60 | lowest score, in percent, worth suggesting |
 | `scoutFrom`, `scoutTo` | 0, 23 | only look in these local hours (inclusive; from > to wraps past midnight) |
 
-It reads these every minute, so changes apply within a minute. It works in sessions of about 15 to 20 minutes with 30 to 90 minutes of rest between them, pauses 3 to 12 seconds between videos, never runs at the same time as the likes sync (the sync always wins; they share one browser), and stops collecting while 200 or more picks are waiting for you.
+It reads these every minute, so changes apply within a minute. It works in sessions of about 15 to 20 minutes with 1 to 10 minutes of rest between them, pauses 3 to 12 seconds between videos, never runs at the same time as the likes sync (the sync always wins; they share one browser), and stops collecting while 200 or more picks are waiting for you.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
