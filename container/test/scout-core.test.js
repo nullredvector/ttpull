@@ -547,6 +547,16 @@ test('status.json has the contract shape, is written atomically, and tracks the 
   assert.deepEqual((await fs.readdir(path.join(c.ad, 'scout'))).filter(f => f.endsWith('.tmp')), []);
 });
 
+test('picture posts are never fetched, scored or suggested', async () => {
+  const c = await setup({ settings: ON, feed: fakeFeed(i => (i % 2 ? { ...defaultItem(i), photo: true } : defaultItem(i))) });
+  await c.scout.cycle();
+  assert.ok(c.calls.cover.length > 0, 'the videos were handled');
+  assert.ok(c.calls.cover.every(u => Number(u.split('/').pop()) % 2 === 0), 'no cover was downloaded for a picture post');
+  assert.ok(c.calls.score.every(id => Number(id) % 2 === 0), 'no picture post was scored');
+  const lines = (await fs.readFile(path.join(c.ad, 'scout', 'candidates.jsonl'), 'utf8')).trim().split('\n').map(l => JSON.parse(l));
+  assert.ok(lines.length > 0 && lines.every(l => Number(l.id) % 2 === 0), 'only videos were suggested');
+});
+
 test('while it rests, status.json says when the next session starts; a stop says when it ends', async () => {
   const c = await setup({ settings: { ...ON, scoutDaily: 5000 }, random: seeded(5) });
   await c.scout.cycle();

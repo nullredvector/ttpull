@@ -348,7 +348,7 @@ export function createScout(deps) {
       try { await feed?.close(); } catch { /* ignore */ }
       try { await store.trimCandidates(); } catch { /* ignore */ }
       await save();
-      log(`session ended: ${st.today.collected - collectedBefore} collected, ${st.today.viewed} looked at today`);
+      log(`session ended: ${st.today.collected - collectedBefore} collected, ${st.today.viewed} looked at today, ${st.today.skippedPhotos || 0} picture posts left out`);
     }
   }
 
@@ -357,6 +357,7 @@ export function createScout(deps) {
     if (!/^\d{5,25}$/.test(id)) return;
     if (known.have.has(id) || cands.has(id) || id in decisions || seen.has(id)) return;
     seen.add(id);
+    if (item.photo) { st.today.skippedPhotos = (st.today.skippedPhotos || 0) + 1; return; }   // picture posts are not videos: never suggested
     if (!item.coverUrl) return;
 
     let bytes;

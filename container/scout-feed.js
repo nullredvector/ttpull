@@ -29,11 +29,23 @@ export function looksLikeChallenge(body) {
   return false;
 }
 
+// A picture post (a slideshow of photos) rather than a video: the feed marks it with an image list, and its video has no length or stream.
+export function isPicturePost(it) {
+  if (!it || typeof it !== 'object') return false;
+  const imgs = it.imagePost || it.image_post_info || it.imagePostInfo;
+  if (imgs && typeof imgs === 'object') return true;
+  if (Array.isArray(it.images) && it.images.length) return true;
+  const v = it.video;
+  if (v && typeof v === 'object' && Number(v.duration) === 0 && !v.playAddr && !v.downloadAddr) return true;
+  return false;
+}
+
 export function parseItem(it) {
   if (!it || it.id == null) return null;
   const v = it.video || {};
   const a = it.author;
   return {
+    ...(isPicturePost(it) ? { photo: true } : {}),
     id: String(it.id),
     author: (a && typeof a === 'object' ? (a.uniqueId || a.unique_id || '') : (typeof a === 'string' ? a : '')),
     desc: typeof it.desc === 'string' ? it.desc : '',

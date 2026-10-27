@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 
 import {
-  parseItem, looksLikeChallenge, isWriteRequest, WRITE_BLOCKS, createFeedReader,
+  parseItem, isPicturePost, looksLikeChallenge, isWriteRequest, WRITE_BLOCKS, createFeedReader,
 } from '../scout-feed.js';
 import { ScoutStop, FeedHiccup } from '../scout-core.js';
 
@@ -21,6 +21,19 @@ test('parseItem reads the four fields it needs and nothing else', () => {
   const it = { id: 7000000000001, desc: 'made-up caption', author: { uniqueId: 'someone', nickname: 'Not Kept', secUid: 'also-not-kept' },
     video: { originCover: 'https://cdn.invalid/o.jpg', cover: 'https://cdn.invalid/c.jpg', playAddr: 'https://cdn.invalid/video.mp4' }, stats: { diggCount: 1 } };
   assert.deepEqual(parseItem(it), { id: '7000000000001', author: 'someone', desc: 'made-up caption', coverUrl: 'https://cdn.invalid/o.jpg' });
+});
+
+test('picture posts are recognised; videos are not', () => {
+  assert.equal(isPicturePost({ id: '1', imagePost: { images: [{}] }, video: { duration: 0 } }), true);
+  assert.equal(isPicturePost({ id: '1', image_post_info: { images: [] } }), true);
+  assert.equal(isPicturePost({ id: '1', images: [{ url: 'x' }] }), true);
+  assert.equal(isPicturePost({ id: '1', video: { duration: 0, cover: 'c' } }), true, 'no length and no stream');
+  assert.equal(isPicturePost({ id: '1', video: { duration: 12, playAddr: 'https://cdn.invalid/v.mp4' } }), false);
+  assert.equal(isPicturePost({ id: '1', video: { duration: 0, playAddr: 'https://cdn.invalid/v.mp4' } }), false, 'a stream means a video');
+  assert.equal(isPicturePost({ id: '1' }), false, 'unknown is kept');
+  assert.equal(isPicturePost(null), false);
+  assert.equal(parseItem({ id: '12345', imagePost: { images: [{}] }, video: { cover: 'c' } }).photo, true);
+  assert.equal('photo' in parseItem({ id: '12345', video: { duration: 9, playAddr: 'p', cover: 'c' } }), false);
 });
 
 test('parseItem copes with missing or odd fields', () => {
